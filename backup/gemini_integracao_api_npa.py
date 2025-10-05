@@ -17,14 +17,12 @@ from pydantic import BaseModel, Field
 from analise_clima import analisar_dados_climaticos
 
 # ===== CONFIGURAÇÃO DO GEMINI =====
-# Pega a chave da API a partir de uma variável de ambiente
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise ValueError("A variável de ambiente GEMINI_API_KEY não foi configurada.")
+# IMPORTANTE: Substitua pela sua chave API real
+GEMINI_API_KEY = "COLE_AQUI_SUA_CHAVE_GEMINI_API"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Configurar o modelo Gemini
-gemini_model = genai.GenerativeModel('gemini-2.5-pro')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # ===== CONFIGURAÇÃO DA API =====
 app = FastAPI(
