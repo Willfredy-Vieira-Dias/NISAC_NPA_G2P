@@ -1,6 +1,8 @@
-fastapi
-uvicorn
+fastapi==0.118.0
+uvicorn[standard]==0.37.0
 google-generativeai
 httpx
 pandas
 numpy
+pydantic
+python-multipart
