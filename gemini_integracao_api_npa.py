@@ -18,13 +18,13 @@ from analise_clima import analisar_dados_climaticos
 
 # ===== CONFIGURAÇÃO DO GEMINI =====
 # Pega a chave da API a partir de uma variável de ambiente
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise ValueError("A variável de ambiente GEMINI_API_KEY não foi configurada.")
-genai.configure(api_key=GEMINI_API_KEY)
+#-- GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+#if not GEMINI_API_KEY:
+    #raise ValueError("A variável de ambiente GEMINI_API_KEY não foi configurada.")
+genai.configure(api_key="AIzaSyDsb4RA6DxxgGFnRAn3Fwdhy6nkUHcnQZE")
 
 # Configurar o modelo Gemini
-gemini_model = genai.GenerativeModel('gemini-2.5-pro')
+gemini_model = genai.GenerativeModel('gemma-3n-e4b-it')
 
 # ===== CONFIGURAÇÃO DA API =====
 app = FastAPI(
