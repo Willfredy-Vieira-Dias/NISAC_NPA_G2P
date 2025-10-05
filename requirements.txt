@@ -5,4 +5,4 @@ httpx
 pandas
 numpy
 pydantic
-python-multipart
+python-multipartg
