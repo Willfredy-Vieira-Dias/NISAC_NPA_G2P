@@ -1,25 +1,34 @@
-# For more information, please refer to https://aka.ms/vscode-docker-python
-FROM python:3-slim
+# Base image (usa Python 3.11 por estabilidade e compatibilidade com Google libs)
+FROM python:3.11-slim
 
+# Expõe a porta da aplicação
 EXPOSE 8000
 
-# Keeps Python from generating .pyc files in the container
+# Impede a criação de arquivos .pyc
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Turns off buffering for easier container logging
+# Desativa buffer do Python para logs em tempo real
 ENV PYTHONUNBUFFERED=1
 
-# Install pip requirements
-COPY requirements.txt .
-RUN python -m pip install -r requirements.txt
-
+# Define diretório de trabalho
 WORKDIR /app
+
+# Copia apenas o requirements primeiro (para aproveitar cache de build)
+COPY requirements.txt .
+
+# Instala dependências de sistema e Python
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+ && python -m pip install --no-cache-dir -r requirements.txt \
+ && python -m pip install --no-cache-dir google --upgrade \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Copia o código do projeto
 COPY . /app
 
-# Creates a non-root user with an explicit UID and adds permission to access the /app folder
-# For more info, please refer to https://aka.ms/vscode-docker-python-configure-containers
-RUN adduser -u 5678 --disabled-password --gecos "" appuser && chown -R appuser /app
+# Cria um usuário não-root por segurança
+RUN adduser --disabled-password --gecos "" appuser && chown -R appuser /app
 USER appuser
 
-# During debugging, this entry point will be overridden. For more information, please refer to https://aka.ms/vscode-docker-python-debug
+# Comando de inicialização
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "-k", "uvicorn.workers.UvicornWorker", "gemini_integracao_api_npa:app"]
