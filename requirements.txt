@@ -7,3 +7,5 @@ google-generativeai
 httpx
 python-dotenv
 gunicorn
+pandas==2.3.3
+numpy==2.3.3
