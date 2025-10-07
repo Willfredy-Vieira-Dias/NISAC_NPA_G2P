@@ -1,4 +1,4 @@
-# api_integrada.py - Versão com Geocodificação Automática
+# gemini_integracao_api_npa.py - Versão 3.4.0 com Geocodificação Robusta
 # -*- coding: utf-8 -*-
 
 import os
@@ -20,47 +20,32 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-# Importa o módulo de análise existente (assumimos que este arquivo existe e funciona)
+# Importa o módulo de análise existente
 import sys
-import os
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-# Small diagnostic output to help in environments like Render where PYTHONPATH
-# or working directory may differ. These logs will show at import time.
-_startup_info = {
-    'cwd': os.getcwd(),
-    'sys_path': list(sys.path)[:10]  # show first 10 entries to avoid huge logs
-}
-print(f"[startup] cwd={_startup_info['cwd']}")
-print(f"[startup] sys.path (top 10)={_startup_info['sys_path']}")
-
-# Try a relative import first (works when this file is used as part of the `src` package).
 try:
-    # Ensure project root is available on sys.path for environments that start
-    # the app from a different working directory (Render, Gunicorn, etc.).
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    from .analise_clima import analisar_dados_climaticos  # type: ignore
-except Exception:
-    # Fall back to absolute import which can work when project root is on PYTHONPATH
+    # Tentativa de importação relativa, comum em pacotes
+    from .analise_clima import analisar_dados_climaticos
+except (ImportError, ModuleNotFoundError):
     try:
-        from src.analise_clima import analisar_dados_climaticos  # type: ignore
-    except Exception as ex:
-        logging.exception("Falha ao importar 'analise_clima' via relative or absolute import.")
-        # Função mock caso o arquivo não exista, para permitir que a API inicie
+        # Fallback para importação absoluta, se o script for executado de uma forma diferente
+        from analise_clima import analisar_dados_climaticos
+    except (ImportError, ModuleNotFoundError):
+        logging.exception("Falha ao importar 'analise_clima'. Usando função mock.")
         def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
-            logging.warning("Módulo 'analise_clima' não encontrado. Usando dados mock.")
             return {"mock_data": "análise não pôde ser realizada", "dia_alvo": dia_alvo}
+
 
 # ===== CONFIGURAÇÃO DE LOGGING =====
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 
-# ===== GESTÃO DE CONFIGURAÇÕES (BOAS PRÁTICAS) =====
+# ===== GESTÃO DE CONFIGURAÇÕES =====
 class Settings(BaseSettings):
-    """Carrega configurações a partir de variáveis de ambiente."""
     GEMINI_API_KEY: str
     NASA_POWER_BASE_URL: str = "https://power.larc.nasa.gov/api/temporal/daily/point"
-    # <<< NOVO: URL da API de Geocodificação Nominatim (OpenStreetMap)
     GEOCODING_API_URL: str = "https://nominatim.openstreetmap.org/search"
     DEFAULT_ANALYSIS_START_YEAR: int = 1981
     DEFAULT_ANALYSIS_END_YEAR: int = 2025
@@ -71,36 +56,39 @@ class Settings(BaseSettings):
 
 try:
     settings = Settings()
-    if genai is not None:
-        try:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-        except Exception as e:
-            logging.warning(f"Falha ao configurar google.generativeai: {e}")
+    if genai:
+        genai.configure(api_key=settings.GEMINI_API_KEY)
 except ValueError as e:
     logging.error(f"Erro ao carregar configurações: {e}")
     raise
 
 # ===== CONFIGURAÇÃO DO MODELO GEMINI =====
-if genai is not None:
+if genai:
     try:
-        gemini_model = genai.GenerativeModel('models/gemma-3-4b-it')
-    except Exception:
+        # Nota: 'models/gemma-3-4b-it' pode não ser um nome de modelo válido.
+        # Use um modelo disponível como 'gemini-1.5-flash-latest' ou 'gemini-pro'.
+        # Verifique a lista de modelos disponíveis na documentação da API.
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    except Exception as e:
         gemini_model = None
-        logging.warning("Não foi possível inicializar o modelo Gemini; chamadas à IA retornarão mensagens de erro mock.")
+        logging.warning(f"Não foi possível inicializar o modelo Gemini: {e}")
 else:
     gemini_model = None
 
+# ===== PROMPTS PARA A IA (MELHORADOS) =====
 
-# ===== PROMPTS PARA A IA (ATUALIZADO) =====
+# <<< MELHORIA: Prompt mais detalhado para evitar ambiguidades geográficas.
 EXTRACTION_PROMPT_TEMPLATE = """
-Você é um assistente especialista em extrair o nome de locais de textos.
-Analise a consulta do usuário e retorne APENAS um objeto JSON com a seguinte estrutura. O mais importante é extrair o nome do local.
+Você é um assistente especialista em extrair e contextualizar nomes de locais de textos para geocodificação.
+Analise a consulta do usuário e retorne APENAS um objeto JSON com a seguinte estrutura.
+O mais importante é extrair um nome de local o mais específico possível para evitar ambiguidade.
+Para locais globais ou famosos (ex: Polo Norte, Monte Everest, Deserto do Saara), adicione um contexto geográfico.
 
 Consulta: "{query}"
 
 Estrutura JSON de saída:
 {{
-    "location_name": "<o nome do local, cidade, região ou país mencionado, ex: 'Benguela, Angola' ou 'Torre Eiffel, Paris'>",
+    "location_name": "<o nome do local o mais completo possível, ex: 'Polo Norte Geográfico, Ártico', 'Benguela, Angola', 'Torre Eiffel, Paris, França'>",
     "event_date": "<data no formato YYYY-MM-DD ou null>",
     "event_type": "<tipo de evento ou null>"
 }}
@@ -151,11 +139,12 @@ Estrutura JSON de saída:
     ]
 }}
 """
+
 # ===== CONFIGURAÇÃO DA API FASTAPI =====
 app = FastAPI(
     title="Cygnus-X1 AI-Powered Weather Analysis",
-    description="API com geocodificação automática para análise climática em qualquer local do mundo.",
-    version="3.3.0" # Versão com Geocodificação
+    description="API com geocodificação robusta para análise climática em qualquer local do mundo.",
+    version="3.4.0"
 )
 
 app.add_middleware(
@@ -173,7 +162,7 @@ class SearchQueryRequest(BaseModel):
 class ExtractedInfo(BaseModel):
     latitude: float
     longitude: float
-    location_name: str # Adicionado para melhor feedback
+    location_name: str
     event_date: Optional[str] = None
     event_type: str = "evento"
     analysis_start_date: str
@@ -195,10 +184,6 @@ class ApiResponse(BaseModel):
 # ===== FUNÇÕES AUXILIARES =====
 
 def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
-    """
-    Limpa a resposta de texto do modelo para extrair um objeto JSON.
-    Remove markdown (```json ... ```) e tenta fazer o parse.
-    """
     json_str = raw_text.strip()
     if json_str.startswith("```") and json_str.endswith("```"):
         json_str = json_str.split('\n', 1)[1]
@@ -209,16 +194,16 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
         logging.error(f"Falha ao decodificar JSON após limpeza. Texto: '{json_str}'. Erro: {e}")
         raise ValueError("A resposta da IA não continha um JSON válido.")
 
+# <<< MELHORIA: Função de geocodificação mais robusta.
 async def get_coords_from_location_name(location_name: str) -> Tuple[float, float]:
-    """
-    Usa a API Nominatim (OpenStreetMap) para obter lat/lon de um nome de local.
-    """
     if not location_name:
         raise ValueError("O nome do local não pode ser vazio.")
 
     params = {'q': location_name, 'format': 'json', 'limit': 1}
-    # É boa prática da API Nominatim enviar um User-Agent descritivo.
-    headers = {'User-Agent': 'CygnusX1-WeatherApp/1.0'} 
+    headers = {
+        'User-Agent': 'CygnusX1-WeatherApp/1.0',
+        'Accept-Language': 'en,pt;q=0.9'  # Prioriza resultados em inglês para locais globais
+    }
     
     async with httpx.AsyncClient() as client:
         try:
@@ -231,7 +216,8 @@ async def get_coords_from_location_name(location_name: str) -> Tuple[float, floa
                 location = data[0]
                 lat = float(location['lat'])
                 lon = float(location['lon'])
-                logging.info(f"Coordenadas encontradas: lat={lat}, lon={lon}")
+                found_display_name = location.get('display_name', 'N/A')
+                logging.info(f"Coordenadas encontradas para '{location_name}': lat={lat}, lon={lon} (Local: {found_display_name})")
                 return lat, lon
             else:
                 raise ValueError(f"Nenhuma coordenada encontrada para '{location_name}'.")
@@ -241,11 +227,6 @@ async def get_coords_from_location_name(location_name: str) -> Tuple[float, floa
             raise ValueError(f"Não foi possível obter coordenadas para '{location_name}'. Tente ser mais específico.")
 
 async def extract_info_with_gemini(query: str) -> ExtractedInfo:
-    """
-    Etapa 1: Usa Gemini para extrair o NOME do local.
-    Etapa 2: Usa a API de geocodificação para obter as coordenadas.
-    """
-    # --- Etapa 1: Extrair o nome do local com Gemini ---
     prompt = EXTRACTION_PROMPT_TEMPLATE.format(query=query)
     try:
         response = await gemini_model.generate_content_async(prompt)
@@ -254,18 +235,15 @@ async def extract_info_with_gemini(query: str) -> ExtractedInfo:
         
         if not location_name:
             raise ValueError("A IA não conseguiu identificar um nome de local na sua consulta.")
-
     except Exception as e:
         logging.error(f"Gemini (extract name): Erro inesperado. {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao extrair o nome do local: {e}")
 
-    # --- Etapa 2: Obter coordenadas com a API de Geocodificação ---
     try:
         lat, lon = await get_coords_from_location_name(location_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    # --- Montar o resultado final ---
     start_year = settings.DEFAULT_ANALYSIS_START_YEAR
     end_year = settings.DEFAULT_ANALYSIS_END_YEAR
     
@@ -280,7 +258,6 @@ async def extract_info_with_gemini(query: str) -> ExtractedInfo:
     )
 
 async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Busca dados da API NASA POWER de forma assíncrona."""
     async with httpx.AsyncClient(timeout=45.0) as client:
         try:
             resp = await client.get(settings.NASA_POWER_BASE_URL, params=params)
@@ -294,7 +271,6 @@ async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
             raise HTTPException(status_code=504, detail="Falha de conexão com o servidor da NASA.")
 
 async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str) -> Tuple[Dict, Dict]:
-    """Gera recomendações e insights de dashboard em paralelo com a IA."""
     try:
         prompt_recommendations = RECOMMENDATION_PROMPT_TEMPLATE.format(
             event_type=event_type, 
@@ -324,6 +300,9 @@ async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str) ->
           tags=["AI Analysis"],
           summary="Análise climática completa via linguagem natural")
 async def analyze_with_ai(request: SearchQueryRequest):
+    if not gemini_model:
+        raise HTTPException(status_code=503, detail="O modelo de IA não está disponível.")
+
     logging.info(f"Nova consulta recebida: '{request.query}'")
     
     extracted_info = await extract_info_with_gemini(request.query)
@@ -388,33 +367,13 @@ async def analyze_with_ai(request: SearchQueryRequest):
 # ===== ROTAS ADICIONAIS =====
 @app.get("/", tags=["Status"], summary="Informações da API")
 def root():
-    return {
-        "api_name": app.title,
-        "version": app.version,
-        "documentation": "/docs"
-    }
+    return {"api_name": app.title, "version": app.version, "documentation": "/docs"}
 
 @app.get("/health", tags=["Status"], summary="Verificação de saúde")
 def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat()
-    }
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ===== EXECUÇÃO DA APLICAÇÃO =====
 if __name__ == "__main__":
     import uvicorn
-    
-    print("="*60)
-    print(f"🚀 CYGNUS-X1 ANÁLISE CLIMÁTICA COM IA (v{app.version})")
-    print("="*60)
-    print(f"🤖 Modelo Gemini: {gemini_model.model_name}")
-    print("🌍 Geocodificação: Ativa via OpenStreetMap Nominatim")
-    print("🛰️ Fonte de Dados: NASA POWER API")
-    print("📊 Módulo de Análise: Carregado")
-    print("="*60)
-    print("📚 Documentação Interativa: http://127.0.0.1:8000/docs")
-    print("✅ Endpoint Principal: [POST] http://127.0.0.1:8000/api/analyze")
-    print("="*60)
-    
     uvicorn.run(app, host="0.0.0.0", port=8000)
