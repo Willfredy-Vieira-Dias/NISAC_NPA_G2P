@@ -1,7 +1,7 @@
 import requests
 r = requests.post(
   "https://nisac-npa-g2p.onrender.com/api/analyze",
-  json={"query":"Vamos fazer uma natação de 45KM no Dubai com olhos vendados no dia 21 de fevereiro."},
+  json={"query":"Vou fazer uma competição de ficar sem roupa no frio no dia 18 de Agosto em Manchester, UK."},
   timeout=180
 )
 print(r.status_code, r.json())
