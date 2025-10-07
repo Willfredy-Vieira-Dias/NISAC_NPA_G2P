@@ -1,4 +1,5 @@
-# main.py
+# main.pycls
+import os
 import uvicorn
 from src.gemini_integracao_api_npa import app
 
