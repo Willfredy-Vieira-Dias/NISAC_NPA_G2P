@@ -87,29 +87,38 @@ Estrutura JSON de saída:
 
 # <<< MELHORIA: Adicionado {event_context} para personalizar as recomendações com base no contexto extraído.
 RECOMMENDATION_PROMPT_TEMPLATE = """
-Você é um especialista em meteorologia e planeamento de eventos para qualquer parte do mundo.
-Baseado nos seguintes dados climáticos para um evento do tipo '{event_type}', agendado para a data de '{event_date}', e com o contexto adicional '{event_context}', gere recomendações detalhadas e personalizadas.
-Considere o contexto para adaptar as sugestões, como riscos específicos para atividades ao ar livre, vestimenta inadequada, ou condições físicas extremas.
-Retorne APENAS um objeto JSON com a estrutura especificada abaixo, sem explicações ou markdown.
+Você é um especialista em meteorologia e planejamento de eventos, com atuação global. Com base nos dados climáticos informados para um evento do tipo '{event_type}', programado para a data '{event_date}' e considerando o contexto adicional '{event_context}', gere recomendações detalhadas e personalizadas. As sugestões devem levar em conta riscos climáticos específicos para atividades ao ar livre, possíveis inadequações de vestimenta ou condições físicas extremas, adaptando-se ao contexto apresentado.
 
-Dados de Análise:
-{analysis_data}
+Antes de responder, inicie com uma checklist conceitual de etapas para análise dos dados e elaboração das recomendações (3-7 itens, nível conceitual, não detalhado). Em seguida:
 
-Estrutura JSON de saída:
-{{
-    "resumo_executivo": "<parágrafo conciso sobre as condições gerais para a data correta do evento, considerando o contexto>",
-    "nivel_risco": "<BAIXO, MODERADO, ALTO ou MUITO_ALTO>",
-    "recomendacao_principal": "<a recomendação mais crítica, personalizada ao contexto>",
-    "preparacoes_essenciais": ["<lista de 3-5 preparações críticas, adaptadas ao contexto>"],
-    "alternativas_sugeridas": {{
-        "datas_alternativas": ["<lista de até 3 sugestões de datas se aplicável>"],
-        "horarios_alternativos": "<sugestão de horário (manhã, tarde, noite)>",
-        "tipo_local": "<recomendação: 'ambiente fechado', 'ambiente aberto com cobertura' ou 'ambiente aberto'>"
-    }},
-    "itens_necessarios": ["<lista de 5-8 itens essenciais para os convidados/evento, personalizados ao contexto>"],
-    "avisos_especiais": ["<lista de 2-3 avisos importantes (ex: risco de ventos fortes), considerando o contexto>"],
-    "dica_especial": "<uma dica única e criativa baseada nos dados e no contexto>"
-}}
+Retorne SOMENTE um objeto JSON conforme a estrutura abaixo, sem explicações adicionais ou formatação markdown.
+
+## Output Format
+Retorne o JSON com a seguinte estrutura:
+{
+  "recomendacoes": [
+    {
+      "titulo": "string (título da recomendação)",
+      "descricao": "string (detalhamento da recomendação)"
+    },
+    ...
+  ],
+  "avisos_climaticos": [
+    "string (avisos relevantes, explicando riscos ou cuidados com o clima)"
+  ],
+  "ajustes_sugeridos": [
+    "string (alterações ou adaptações sugeridas ao evento em função do clima)"
+  ],
+  "dados_utilizados": {
+    "event_type": "string ou null (tipo do evento ou null se ausente)",
+    "event_date": "string ou null (data do evento ou null se ausente)",
+    "event_context": "string ou null (contexto adicional ou null se ausente)"
+  },
+  "campos_ausentes": [
+    "event_type", "event_date", "event_context" (inclua no array os nomes dos campos não fornecidos, inválidos ou em branco)]
+}
+
+Se qualquer um dos campos de entrada ({event_type}, {event_date}, {event_context}) estiver ausente, inválido ou em branco, atribua null ao campo correspondente em "dados_utilizados" e adicione o nome do campo em "campos_ausentes". Antes de gerar o JSON final, valide se todos os dados necessários foram considerados e adapte as recomendações conforme necessário.
 """
 
 DASHBOARD_PROMPT_TEMPLATE = """
