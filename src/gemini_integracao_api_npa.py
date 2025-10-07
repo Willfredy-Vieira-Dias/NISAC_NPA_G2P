@@ -69,7 +69,7 @@ Estrutura JSON de saída:
 """
 
 RECOMMENDATION_PROMPT_TEMPLATE = """
-Você é um especialista em meteorologia e planeamento de eventos para Angola.
+Você é um especialista em meteorologia e planeamento de eventos para qualquer parte do mundo.
 Baseado nos seguintes dados climáticos para um evento do tipo '{event_type}', gere recomendações detalhadas.
 Retorne APENAS um objeto JSON com a estrutura especificada abaixo, sem explicações ou markdown.
 
