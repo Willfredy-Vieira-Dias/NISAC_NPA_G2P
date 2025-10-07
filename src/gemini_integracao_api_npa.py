@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings
 
 # Importa o módulo de análise existente (assumimos que este arquivo existe e funciona)
 try:
-    from analise_clima import analisar_dados_climaticos
+    from src.analise_clima import analisar_dados_climaticos
 except ImportError:
     # Função mock caso o arquivo não exista, para permitir que a API inicie
     def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
