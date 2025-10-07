@@ -1,4 +1,4 @@
-# gemini_integracao_api_npa.py - Versão 3.4.0 com Geocodificação Robusta
+# gemini_integracao_api_npa.py - Versão 3.5.0 com Correção de Contexto de Data
 # -*- coding: utf-8 -*-
 
 import os
@@ -27,17 +27,11 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 try:
-    # Tentativa de importação relativa, comum em pacotes
-    from .analise_clima import analisar_dados_climaticos
+    from analise_clima import analisar_dados_climaticos
 except (ImportError, ModuleNotFoundError):
-    try:
-        # Fallback para importação absoluta, se o script for executado de uma forma diferente
-        from analise_clima import analisar_dados_climaticos
-    except (ImportError, ModuleNotFoundError):
-        logging.exception("Falha ao importar 'analise_clima'. Usando função mock.")
-        def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
-            return {"mock_data": "análise não pôde ser realizada", "dia_alvo": dia_alvo}
-
+    logging.exception("Falha ao importar 'analise_clima'. Usando função mock.")
+    def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
+        return {"mock_data": "análise não pôde ser realizada", "dia_alvo": dia_alvo}
 
 # ===== CONFIGURAÇÃO DE LOGGING =====
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
@@ -65,9 +59,6 @@ except ValueError as e:
 # ===== CONFIGURAÇÃO DO MODELO GEMINI =====
 if genai:
     try:
-        # Nota: 'models/gemma-3-4b-it' pode não ser um nome de modelo válido.
-        # Use um modelo disponível como 'gemini-1.5-flash-latest' ou 'gemini-pro'.
-        # Verifique a lista de modelos disponíveis na documentação da API.
         gemini_model = genai.GenerativeModel('gemma-3-4b-it')
     except Exception as e:
         gemini_model = None
@@ -76,8 +67,6 @@ else:
     gemini_model = None
 
 # ===== PROMPTS PARA A IA (MELHORADOS) =====
-
-# <<< MELHORIA: Prompt mais detalhado para evitar ambiguidades geográficas.
 EXTRACTION_PROMPT_TEMPLATE = """
 Você é um assistente especialista em extrair e contextualizar nomes de locais de textos para geocodificação.
 Analise a consulta do usuário e retorne APENAS um objeto JSON com a seguinte estrutura.
@@ -94,9 +83,10 @@ Estrutura JSON de saída:
 }}
 """
 
+# <<< MELHORIA: Adicionado placeholder {event_date} para dar contexto temporal à IA.
 RECOMMENDATION_PROMPT_TEMPLATE = """
 Você é um especialista em meteorologia e planeamento de eventos para qualquer parte do mundo.
-Baseado nos seguintes dados climáticos para um evento do tipo '{event_type}', gere recomendações detalhadas.
+Baseado nos seguintes dados climáticos para um evento do tipo '{event_type}', agendado para a data de '{event_date}', gere recomendações detalhadas.
 Retorne APENAS um objeto JSON com a estrutura especificada abaixo, sem explicações ou markdown.
 
 Dados de Análise:
@@ -104,7 +94,7 @@ Dados de Análise:
 
 Estrutura JSON de saída:
 {{
-    "resumo_executivo": "<parágrafo conciso sobre as condições gerais>",
+    "resumo_executivo": "<parágrafo conciso sobre as condições gerais para a data correta do evento>",
     "nivel_risco": "<BAIXO, MODERADO, ALTO ou MUITO_ALTO>",
     "recomendacao_principal": "<a recomendação mais crítica>",
     "preparacoes_essenciais": ["<lista de 3-5 preparações críticas>"],
@@ -144,7 +134,7 @@ Estrutura JSON de saída:
 app = FastAPI(
     title="Cygnus-X1 AI-Powered Weather Analysis",
     description="API com geocodificação robusta para análise climática em qualquer local do mundo.",
-    version="3.4.0"
+    version="3.5.0"
 )
 
 app.add_middleware(
@@ -155,31 +145,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===== MODELOS DE DADOS (PYDANTIC) =====
+# ... (O resto dos modelos Pydantic não muda) ...
 class SearchQueryRequest(BaseModel):
     query: str = Field(..., description="Consulta em linguagem natural do usuário.", min_length=10)
-
 class ExtractedInfo(BaseModel):
-    latitude: float
-    longitude: float
-    location_name: str
-    event_date: Optional[str] = None
-    event_type: str = "evento"
-    analysis_start_date: str
-    analysis_end_date: str
-
+    latitude: float; longitude: float; location_name: str; event_date: Optional[str] = None; event_type: str = "evento"; analysis_start_date: str; analysis_end_date: str
 class QuickSummary(BaseModel):
-    risk_level: str
-    rain_probability: float
-    heat_risk: float
-    main_risks: List[str]
-
+    risk_level: str; rain_probability: float; heat_risk: float; main_risks: List[str]
 class ApiResponse(BaseModel):
-    query_info: Dict[str, Any]
-    climate_analysis: Dict[str, Any]
-    ai_recommendations: Dict[str, Any]
-    dashboard_insights: Dict[str, Any]
-    quick_summary: QuickSummary
+    query_info: Dict[str, Any]; climate_analysis: Dict[str, Any]; ai_recommendations: Dict[str, Any]; dashboard_insights: Dict[str, Any]; quick_summary: QuickSummary
 
 # ===== FUNÇÕES AUXILIARES =====
 
@@ -194,34 +168,23 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
         logging.error(f"Falha ao decodificar JSON após limpeza. Texto: '{json_str}'. Erro: {e}")
         raise ValueError("A resposta da IA não continha um JSON válido.")
 
-# <<< MELHORIA: Função de geocodificação mais robusta.
 async def get_coords_from_location_name(location_name: str) -> Tuple[float, float]:
-    if not location_name:
-        raise ValueError("O nome do local não pode ser vazio.")
-
+    if not location_name: raise ValueError("O nome do local não pode ser vazio.")
     params = {'q': location_name, 'format': 'json', 'limit': 1}
-    headers = {
-        'User-Agent': 'CygnusX1-WeatherApp/1.0',
-        'Accept-Language': 'en,pt;q=0.9'  # Prioriza resultados em inglês para locais globais
-    }
-    
+    headers = {'User-Agent': 'CygnusX1-WeatherApp/1.0', 'Accept-Language': 'en,pt;q=0.9'}
     async with httpx.AsyncClient() as client:
         try:
             logging.info(f"Buscando coordenadas para: '{location_name}'")
             response = await client.get(settings.GEOCODING_API_URL, params=params, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
             if data and isinstance(data, list):
                 location = data[0]
-                lat = float(location['lat'])
-                lon = float(location['lon'])
+                lat, lon = float(location['lat']), float(location['lon'])
                 found_display_name = location.get('display_name', 'N/A')
                 logging.info(f"Coordenadas encontradas para '{location_name}': lat={lat}, lon={lon} (Local: {found_display_name})")
                 return lat, lon
-            else:
-                raise ValueError(f"Nenhuma coordenada encontrada para '{location_name}'.")
-
+            else: raise ValueError(f"Nenhuma coordenada encontrada para '{location_name}'.")
         except (httpx.RequestError, IndexError, KeyError, TypeError) as e:
             logging.error(f"Erro na API de geocodificação para '{location_name}': {e}")
             raise ValueError(f"Não foi possível obter coordenadas para '{location_name}'. Tente ser mais específico.")
@@ -232,30 +195,15 @@ async def extract_info_with_gemini(query: str) -> ExtractedInfo:
         response = await gemini_model.generate_content_async(prompt)
         data = clean_and_parse_json(response.text)
         location_name = data.get("location_name")
-        
-        if not location_name:
-            raise ValueError("A IA não conseguiu identificar um nome de local na sua consulta.")
+        if not location_name: raise ValueError("A IA não conseguiu identificar um nome de local na sua consulta.")
     except Exception as e:
         logging.error(f"Gemini (extract name): Erro inesperado. {e}")
         raise HTTPException(status_code=500, detail=f"Erro ao extrair o nome do local: {e}")
-
     try:
         lat, lon = await get_coords_from_location_name(location_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-
-    start_year = settings.DEFAULT_ANALYSIS_START_YEAR
-    end_year = settings.DEFAULT_ANALYSIS_END_YEAR
-    
-    return ExtractedInfo(
-        latitude=lat,
-        longitude=lon,
-        location_name=location_name,
-        event_date=data.get("event_date"),
-        event_type=data.get("event_type") or "evento",
-        analysis_start_date=f"{start_year}0101",
-        analysis_end_date=f"{end_year}1231"
-    )
+    return ExtractedInfo(latitude=lat, longitude=lon, location_name=location_name, event_date=data.get("event_date"), event_type=data.get("event_type") or "evento", analysis_start_date=f"{settings.DEFAULT_ANALYSIS_START_YEAR}0101", analysis_end_date=f"{settings.DEFAULT_ANALYSIS_END_YEAR}1231")
 
 async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -270,10 +218,23 @@ async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
             logging.error(f"Erro de conexão com a API da NASA: {e}")
             raise HTTPException(status_code=504, detail="Falha de conexão com o servidor da NASA.")
 
-async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str) -> Tuple[Dict, Dict]:
+# <<< MELHORIA: A função agora aceita `event_date` para dar contexto à IA.
+async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str, event_date: Optional[str]) -> Tuple[Dict, Dict]:
+    # Cria uma string de data mais legível para a IA, ou um fallback genérico
+    if event_date:
+        try:
+            date_obj = datetime.strptime(event_date, "%Y-%m-%d")
+            meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+            date_str_formatada = f"{date_obj.day} de {meses[date_obj.month - 1]} de {date_obj.year}"
+        except (ValueError, TypeError):
+            date_str_formatada = event_date
+    else:
+        date_str_formatada = "a data do evento"
+
     try:
         prompt_recommendations = RECOMMENDATION_PROMPT_TEMPLATE.format(
-            event_type=event_type, 
+            event_type=event_type,
+            event_date=date_str_formatada,
             analysis_data=json.dumps(analysis_data, indent=2, ensure_ascii=False)
         )
         prompt_dashboard = DASHBOARD_PROMPT_TEMPLATE.format(
@@ -295,10 +256,7 @@ async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str) ->
         return {"error": f"Falha ao gerar recomendações: {e}"}, {"error": f"Falha ao gerar insights: {e}"}
 
 # ===== ROTA PRINCIPAL DA API =====
-@app.post("/api/analyze",
-          response_model=ApiResponse,
-          tags=["AI Analysis"],
-          summary="Análise climática completa via linguagem natural")
+@app.post("/api/analyze", response_model=ApiResponse, tags=["AI Analysis"], summary="Análise climática completa via linguagem natural")
 async def analyze_with_ai(request: SearchQueryRequest):
     if not gemini_model:
         raise HTTPException(status_code=503, detail="O modelo de IA não está disponível.")
@@ -333,7 +291,12 @@ async def analyze_with_ai(request: SearchQueryRequest):
         logging.error(f"Erro na função 'analisar_dados_climaticos': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Erro interno ao analisar os dados climáticos.")
     
-    ai_recommendations, dashboard_insights = await generate_ai_outputs(climate_analysis, extracted_info.event_type)
+    # <<< MELHORIA: Passando a data extraída para a função de geração de IA.
+    ai_recommendations, dashboard_insights = await generate_ai_outputs(
+        climate_analysis,
+        extracted_info.event_type,
+        extracted_info.event_date
+    )
     logging.info("Recomendações e insights da IA gerados.")
     
     quick_summary_data = {
@@ -364,14 +327,11 @@ async def analyze_with_ai(request: SearchQueryRequest):
     
     return JSONResponse(content=response_data, media_type="application/json; charset=utf-8")
 
-# ===== ROTAS ADICIONAIS =====
+# ... (O resto das rotas não muda) ...
 @app.get("/", tags=["Status"], summary="Informações da API")
-def root():
-    return {"api_name": app.title, "version": app.version, "documentation": "/docs"}
-
+def root(): return {"api_name": app.title, "version": app.version, "documentation": "/docs"}
 @app.get("/health", tags=["Status"], summary="Verificação de saúde")
-def health_check():
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+def health_check(): return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 # ===== EXECUÇÃO DA APLICAÇÃO =====
 if __name__ == "__main__":
