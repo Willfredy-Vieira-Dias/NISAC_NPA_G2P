@@ -68,7 +68,7 @@ if genai:
         # Nota: 'models/gemma-3-4b-it' pode não ser um nome de modelo válido.
         # Use um modelo disponível como 'gemini-1.5-flash-latest' ou 'gemini-pro'.
         # Verifique a lista de modelos disponíveis na documentação da API.
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        gemini_model = genai.GenerativeModel('gemma-3-4b-it')
     except Exception as e:
         gemini_model = None
         logging.warning(f"Não foi possível inicializar o modelo Gemini: {e}")
