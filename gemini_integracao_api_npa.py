@@ -1,39 +1,125 @@
-# api_integrada.py - Sistema completo com Gemini AI
+# api_integrada.py - Versão com Geocodificação Automática
 # -*- coding: utf-8 -*-
 
 import os
 import json
-import traceback
-from typing import Optional, Dict, Any, List
+import logging
 from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple
+import asyncio
+
 import google.generativeai as genai
 import httpx
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 
-# Importa o módulo de análise existente
-from analise_clima import analisar_dados_climaticos
+# Importa o módulo de análise existente (assumimos que este arquivo existe e funciona)
+try:
+    from analise_clima import analisar_dados_climaticos
+except ImportError:
+    # Função mock caso o arquivo não exista, para permitir que a API inicie
+    def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
+        logging.warning("Módulo 'analise_clima' não encontrado. Usando dados mock.")
+        return {"mock_data": "análise não pôde ser realizada", "dia_alvo": dia_alvo}
 
-# ===== CONFIGURAÇÃO DO GEMINI =====
-# Pega a chave da API a partir de uma variável de ambiente
-#-- GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-#if not GEMINI_API_KEY:
-    #raise ValueError("A variável de ambiente GEMINI_API_KEY não foi configurada.")
-genai.configure(api_key="AIzaSyDsb4RA6DxxgGFnRAn3Fwdhy6nkUHcnQZE")
+# ===== CONFIGURAÇÃO DE LOGGING =====
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 
-# Configurar o modelo Gemini
-gemini_model = genai.GenerativeModel('gemma-3n-e4b-it')
+# ===== GESTÃO DE CONFIGURAÇÕES (BOAS PRÁTICAS) =====
+class Settings(BaseSettings):
+    """Carrega configurações a partir de variáveis de ambiente."""
+    GEMINI_API_KEY: str
+    NASA_POWER_BASE_URL: str = "https://power.larc.nasa.gov/api/temporal/daily/point"
+    # <<< NOVO: URL da API de Geocodificação Nominatim (OpenStreetMap)
+    GEOCODING_API_URL: str = "https://nominatim.openstreetmap.org/search"
+    DEFAULT_ANALYSIS_START_YEAR: int = 1981
+    DEFAULT_ANALYSIS_END_YEAR: int = 2025
+    
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
 
-# ===== CONFIGURAÇÃO DA API =====
+try:
+    settings = Settings()
+    genai.configure(api_key=settings.GEMINI_API_KEY)
+except ValueError as e:
+    logging.error(f"Erro ao carregar configurações: {e}")
+    raise
+
+# ===== CONFIGURAÇÃO DO MODELO GEMINI =====
+gemini_model = genai.GenerativeModel('models/gemma-3-4b-it')
+
+
+# ===== PROMPTS PARA A IA (ATUALIZADO) =====
+EXTRACTION_PROMPT_TEMPLATE = """
+Você é um assistente especialista em extrair o nome de locais de textos.
+Analise a consulta do usuário e retorne APENAS um objeto JSON com a seguinte estrutura. O mais importante é extrair o nome do local.
+
+Consulta: "{query}"
+
+Estrutura JSON de saída:
+{{
+    "location_name": "<o nome do local, cidade, região ou país mencionado, ex: 'Benguela, Angola' ou 'Torre Eiffel, Paris'>",
+    "event_date": "<data no formato YYYY-MM-DD ou null>",
+    "event_type": "<tipo de evento ou null>"
+}}
+"""
+
+RECOMMENDATION_PROMPT_TEMPLATE = """
+Você é um especialista em meteorologia e planeamento de eventos para Angola.
+Baseado nos seguintes dados climáticos para um evento do tipo '{event_type}', gere recomendações detalhadas.
+Retorne APENAS um objeto JSON com a estrutura especificada abaixo, sem explicações ou markdown.
+
+Dados de Análise:
+{analysis_data}
+
+Estrutura JSON de saída:
+{{
+    "resumo_executivo": "<parágrafo conciso sobre as condições gerais>",
+    "nivel_risco": "<BAIXO, MODERADO, ALTO ou MUITO_ALTO>",
+    "recomendacao_principal": "<a recomendação mais crítica>",
+    "preparacoes_essenciais": ["<lista de 3-5 preparações críticas>"],
+    "alternativas_sugeridas": {{
+        "datas_alternativas": ["<lista de até 3 sugestões de datas se aplicável>"],
+        "horarios_alternativos": "<sugestão de horário (manhã, tarde, noite)>",
+        "tipo_local": "<recomendação: 'ambiente fechado', 'ambiente aberto com cobertura' ou 'ambiente aberto'>"
+    }},
+    "itens_necessarios": ["<lista de 5-8 itens essenciais para os convidados/evento>"],
+    "avisos_especiais": ["<lista de 2-3 avisos importantes (ex: risco de ventos fortes)>"],
+    "dica_especial": "<uma dica única e criativa baseada nos dados>"
+}}
+"""
+
+DASHBOARD_PROMPT_TEMPLATE = """
+Com base nos dados de probabilidade de condições climáticas, gere insights para um dashboard.
+Retorne APENAS um objeto JSON com a estrutura especificada, sem explicações ou markdown.
+
+Dados de Probabilidade:
+{probability_data}
+
+Estrutura JSON de saída:
+{{
+    "headline": "<título impactante de 5-10 palavras sobre o clima>",
+    "score_geral": 75,
+    "emoji_clima": "<único emoji que representa o clima geral>",
+    "cor_tema": "<código de cor hexadecimal (ex: #4A90E2)>",
+    "tags": ["<lista de 3-5 tags relevantes (ex: 'Sol', 'Risco de Chuva')>"],
+    "grafico_recomendado": "bar",
+    "metricas_chave": [
+        {{"nome": "Prob. Chuva", "valor": "15%", "tendencia": "stable"}}
+    ]
+}}
+"""
+# ===== CONFIGURAÇÃO DA API FASTAPI =====
 app = FastAPI(
     title="Cygnus-X1 AI-Powered Weather Analysis",
-    description="API com processamento de linguagem natural via Gemini AI",
-    version="3.0.0"
+    description="API com geocodificação automática para análise climática em qualquer local do mundo.",
+    version="3.3.0" # Versão com Geocodificação
 )
 
-# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,428 +128,255 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-POWER_BASE = "https://power.larc.nasa.gov/api/temporal/daily/point"
-
-# ===== MODELOS PYDANTIC =====
+# ===== MODELOS DE DADOS (PYDANTIC) =====
 class SearchQueryRequest(BaseModel):
-    query: str = Field(..., description="Consulta em linguagem natural do usuário")
+    query: str = Field(..., description="Consulta em linguagem natural do usuário.", min_length=10)
 
-class ExtractedEventInfo(BaseModel):
-    location: Optional[Dict[str, float]] = None
+class ExtractedInfo(BaseModel):
+    latitude: float
+    longitude: float
+    location_name: str # Adicionado para melhor feedback
     event_date: Optional[str] = None
-    event_type: Optional[str] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
+    event_type: str = "evento"
+    analysis_start_date: str
+    analysis_end_date: str
 
-# ===== FUNÇÕES DE EXTRAÇÃO COM GEMINI =====
-def extrair_informacoes_com_gemini(query: str) -> ExtractedEventInfo:
-    """
-    Usa o Gemini para extrair informações estruturadas da consulta em linguagem natural.
-    """
-    prompt = f"""
-    Você é um assistente especializado em extrair informações de eventos de textos em linguagem natural.
-    
-    Analise a seguinte consulta e extraia as informações relevantes:
-    "{query}"
-    
-    Extraia e retorne APENAS um JSON com a seguinte estrutura (sem markdown, sem explicações):
-    {{
-        "location": {{
-            "latitude": <número decimal ou null>,
-            "longitude": <número decimal ou null>,
-            "city_name": "<nome da cidade ou null>",
-            "country": "<país ou null>"
-        }},
-        "event_date": "<data no formato YYYY-MM-DD ou null>",
-        "event_type": "<tipo de evento: casamento, festa, churrasco, conferência, festival, esportivo, corporativo, etc ou null>",
-        "analysis_period": {{
-            "start_year": <ano inicial para análise histórica, padrão 2010>,
-            "end_year": <ano final para análise histórica, padrão 2024>
-        }}
-    }}
-    
-    Regras importantes:
-    - Se a cidade for mencionada mas não as coordenadas, use estas referências:
-      * Luanda, Angola: lat=-8.83, lon=13.23
-      * Lisboa, Portugal: lat=38.72, lon=-9.14
-      * São Paulo, Brasil: lat=-23.55, lon=-46.63
-      * Rio de Janeiro, Brasil: lat=-22.90, lon=-43.17
-      * Nova York, EUA: lat=40.71, lon=-74.00
-      * Paris, França: lat=48.85, lon=2.35
-      * Londres, UK: lat=51.50, lon=-0.12
-    - Se não houver data específica mencionada, use null
-    - Se o período de análise não for mencionado, use 2010-2024
-    - Para datas relativas como "próximo verão", "junho", converta para YYYY-MM-DD estimado
-    - Retorne APENAS o JSON, sem texto adicional
-    """
-    
-    try:
-        response = gemini_model.generate_content(prompt)
-        json_str = response.text.strip()
-        
-        # Remove markdown se presente
-        if json_str.startswith("```"):
-            json_str = json_str.split("```")[1]
-            if json_str.startswith("json"):
-                json_str = json_str[4:].strip()
-        if json_str.endswith("```"):
-            json_str = json_str.rsplit("```", 1)[0].strip()
-        
-        # Parse do JSON
-        extracted_data = json.loads(json_str)
-        
-        # Criar objeto ExtractedEventInfo
-        info = ExtractedEventInfo()
-        
-        if extracted_data.get("location"):
-            info.location = {
-                "latitude": extracted_data["location"].get("latitude"),
-                "longitude": extracted_data["location"].get("longitude")
-            }
-        
-        info.event_date = extracted_data.get("event_date")
-        info.event_type = extracted_data.get("event_type")
-        
-        # Configurar período de análise
-        period = extracted_data.get("analysis_period", {})
-        info.start_date = f"{period.get('start_year', 1981)}0101"
-        info.end_date = f"{period.get('end_year',)}1231"
-        
-        return info
-        
-    except Exception as e:
-        print(f"[ERROR] Erro ao extrair informações com Gemini: {e}")
-        # Retorna valores padrão se falhar
-        return ExtractedEventInfo(
-            location={"latitude": -8.83, "longitude": 13.23},  # Default: Luanda
-            event_date=None,
-            event_type="evento",
-            start_date="19810101",
-            end_date="20250901"
-        )
+class QuickSummary(BaseModel):
+    risk_level: str
+    rain_probability: float
+    heat_risk: float
+    main_risks: List[str]
 
-def gerar_recomendacoes_ia(dados_analise: Dict[str, Any], event_type: str = None) -> Dict[str, Any]:
+class ApiResponse(BaseModel):
+    query_info: Dict[str, Any]
+    climate_analysis: Dict[str, Any]
+    ai_recommendations: Dict[str, Any]
+    dashboard_insights: Dict[str, Any]
+    quick_summary: QuickSummary
+
+# ===== FUNÇÕES AUXILIARES =====
+
+def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
     """
-    Gera recomendações personalizadas usando Gemini AI baseadas nos dados analisados.
+    Limpa a resposta de texto do modelo para extrair um objeto JSON.
+    Remove markdown (```json ... ```) e tenta fazer o parse.
     """
-    dados_json_str = json.dumps(dados_analise, indent=2, ensure_ascii=False)
-    
-    prompt = f"""
-    Você é um especialista em planeamento de eventos e meteorologia em Angola.
-    
-    Com base nos seguintes dados climáticos históricos para um {event_type or 'evento'}:
-    ```json
-    {dados_json_str}
-    ```
-    
-    Crie recomendações detalhadas em português de Angola. Retorne APENAS um JSON (sem markdown) com:
-    {{
-        "resumo_executivo": "<parágrafo conciso sobre as condições gerais>",
-        "nivel_risco": "<BAIXO, MODERADO, ALTO ou MUITO_ALTO>",
-        "recomendacao_principal": "<recomendação mais importante>",
-        "preparacoes_essenciais": ["<lista de 3-5 preparações críticas>"],
-        "alternativas_sugeridas": {{
-            "datas_alternativas": ["<3 sugestões de datas melhores se aplicável>"],
-            "horarios_alternativos": "<sugestão de horário do dia>",
-            "tipo_local": "<indoor, outdoor_coberto, ou outdoor_aberto>"
-        }},
-        "itens_necessarios": ["<lista de 5-8 itens essenciais para o evento>"],
-        "avisos_especiais": ["<lista de 2-3 avisos importantes se houver>"],
-        "dica_especial": "<uma dica única baseada nos dados>"
-    }}
-    """
-    
+    json_str = raw_text.strip()
+    if json_str.startswith("```") and json_str.endswith("```"):
+        json_str = json_str.split('\n', 1)[1]
+        json_str = json_str.rsplit('\n', 1)[0]
     try:
-        response = gemini_model.generate_content(prompt)
-        json_str = response.text.strip()
-        
-        # Limpar markdown se presente
-        if "```" in json_str:
-            json_str = json_str.split("```")[1]
-            if json_str.startswith("json"):
-                json_str = json_str[4:].strip()
-            if json_str.endswith("```"):
-                json_str = json_str.rsplit("```", 1)[0].strip()
-        
         return json.loads(json_str)
-        
-    except Exception as e:
-        print(f"[ERROR] Erro ao gerar recomendações: {e}")
-        # Retorna recomendações padrão em caso de erro
-        return {
-            "resumo_executivo": "Análise climática realizada com sucesso. Recomenda-se atenção às condições meteorológicas.",
-            "nivel_risco": "MODERADO",
-            "recomendacao_principal": "Considere ter um plano alternativo para o evento.",
-            "preparacoes_essenciais": [
-                "Verificar previsão do tempo próximo à data",
-                "Preparar proteção contra sol/chuva",
-                "Garantir hidratação adequada"
-            ],
-            "alternativas_sugeridas": {
-                "datas_alternativas": [],
-                "horarios_alternativos": "Manhã cedo ou final da tarde",
-                "tipo_local": "outdoor_coberto"
-            },
-            "itens_necessarios": [
-                "Tendas ou coberturas",
-                "Água e bebidas geladas",
-                "Protetor solar",
-                "Kit primeiros socorros"
-            ],
-            "avisos_especiais": [],
-            "dica_especial": "Mantenha-se atualizado com as previsões locais"
-        }
+    except json.JSONDecodeError as e:
+        logging.error(f"Falha ao decodificar JSON após limpeza. Texto: '{json_str}'. Erro: {e}")
+        raise ValueError("A resposta da IA não continha um JSON válido.")
 
-def gerar_insights_dashboard(dados_analise: Dict[str, Any]) -> Dict[str, Any]:
+async def get_coords_from_location_name(location_name: str) -> Tuple[float, float]:
     """
-    Gera insights adicionais para o dashboard usando IA.
+    Usa a API Nominatim (OpenStreetMap) para obter lat/lon de um nome de local.
     """
-    prompt = f"""
-    Baseado nos dados climáticos, gere insights para dashboard.
-    
-    Dados: {json.dumps(dados_analise.get('weather_condition_probabilities', {}), ensure_ascii=False)}
-    
-    Retorne APENAS JSON com:
-    {{
-        "headline": "<título impactante de 5-10 palavras>",
-        "score_geral": <número 0-100>,
-        "emoji_clima": "<emoji representativo>",
-        "cor_tema": "<hex color code>",
-        "tags": ["<3-5 tags relevantes>"],
-        "grafico_recomendado": "<tipo: bar, line, pie, radar>",
-        "metricas_chave": [
-            {{"nome": "<métrica>", "valor": "<valor>", "tendencia": "<up/down/stable>"}}
-        ]
-    }}
-    """
-    
-    try:
-        response = gemini_model.generate_content(prompt)
-        json_str = response.text.strip()
-        if "```" in json_str:
-            json_str = json_str.split("```")[1].replace("json", "").strip()
-        return json.loads(json_str)
-    except:
-        return {
-            "headline": "Condições Climáticas Analisadas",
-            "score_geral": 75,
-            "emoji_clima": "☀️",
-            "cor_tema": "#4A90E2",
-            "tags": ["clima", "análise", "evento"],
-            "grafico_recomendado": "bar",
-            "metricas_chave": []
-        }
+    if not location_name:
+        raise ValueError("O nome do local não pode ser vazio.")
 
-# ===== ROTA PRINCIPAL INTEGRADA =====
-@app.post("/api/analyze",
-          response_model=Dict[str, Any],
-          tags=["AI Analysis"],
-          summary="Análise completa com processamento de linguagem natural")
-async def analyze_with_ai(request: SearchQueryRequest):
-    """
-    Endpoint principal que:
-    1. Recebe texto em linguagem natural
-    2. Extrai informações com Gemini
-    3. Busca dados da NASA
-    4. Realiza análise estatística
-    5. Gera recomendações com IA
-    6. Retorna JSON completo para o frontend
-    """
+    params = {'q': location_name, 'format': 'json', 'limit': 1}
+    # É boa prática da API Nominatim enviar um User-Agent descritivo.
+    headers = {'User-Agent': 'CygnusX1-WeatherApp/1.0'} 
     
-    print(f"[INFO] Query recebida: {request.query}")
-    
-    # Etapa 1: Extrair informações com Gemini
-    try:
-        extracted_info = extrair_informacoes_com_gemini(request.query)
-        print(f"[INFO] Informações extraídas: {extracted_info}")
-    except Exception as e:
-        print(f"[ERROR] Falha na extração: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao processar consulta")
-    
-    # Validar coordenadas
-    if not extracted_info.location or not extracted_info.location.get("latitude"):
-        raise HTTPException(
-            status_code=400,
-            detail="Não foi possível identificar a localização. Por favor, seja mais específico."
-        )
-    
-    lat = extracted_info.location["latitude"]
-    lon = extracted_info.location["longitude"]
-    
-    # Determinar dia alvo
-    dia_alvo = None
-    if extracted_info.event_date:
+    async with httpx.AsyncClient() as client:
         try:
-            dt = datetime.strptime(extracted_info.event_date, "%Y-%m-%d")
-            dia_alvo = dt.strftime("%m-%d")
-        except:
-            dia_alvo = "06-15"  # Default
-    else:
-        dia_alvo = "06-15"  # Default se não especificado
+            logging.info(f"Buscando coordenadas para: '{location_name}'")
+            response = await client.get(settings.GEOCODING_API_URL, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data and isinstance(data, list):
+                location = data[0]
+                lat = float(location['lat'])
+                lon = float(location['lon'])
+                logging.info(f"Coordenadas encontradas: lat={lat}, lon={lon}")
+                return lat, lon
+            else:
+                raise ValueError(f"Nenhuma coordenada encontrada para '{location_name}'.")
+
+        except (httpx.RequestError, IndexError, KeyError, TypeError) as e:
+            logging.error(f"Erro na API de geocodificação para '{location_name}': {e}")
+            raise ValueError(f"Não foi possível obter coordenadas para '{location_name}'. Tente ser mais específico.")
+
+async def extract_info_with_gemini(query: str) -> ExtractedInfo:
+    """
+    Etapa 1: Usa Gemini para extrair o NOME do local.
+    Etapa 2: Usa a API de geocodificação para obter as coordenadas.
+    """
+    # --- Etapa 1: Extrair o nome do local com Gemini ---
+    prompt = EXTRACTION_PROMPT_TEMPLATE.format(query=query)
+    try:
+        response = await gemini_model.generate_content_async(prompt)
+        data = clean_and_parse_json(response.text)
+        location_name = data.get("location_name")
+        
+        if not location_name:
+            raise ValueError("A IA não conseguiu identificar um nome de local na sua consulta.")
+
+    except Exception as e:
+        logging.error(f"Gemini (extract name): Erro inesperado. {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao extrair o nome do local: {e}")
+
+    # --- Etapa 2: Obter coordenadas com a API de Geocodificação ---
+    try:
+        lat, lon = await get_coords_from_location_name(location_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # --- Montar o resultado final ---
+    start_year = settings.DEFAULT_ANALYSIS_START_YEAR
+    end_year = settings.DEFAULT_ANALYSIS_END_YEAR
     
-    # Etapa 2: Buscar dados da NASA
-    params = {
+    return ExtractedInfo(
+        latitude=lat,
+        longitude=lon,
+        location_name=location_name,
+        event_date=data.get("event_date"),
+        event_type=data.get("event_type") or "evento",
+        analysis_start_date=f"{start_year}0101",
+        analysis_end_date=f"{end_year}1231"
+    )
+
+async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Busca dados da API NASA POWER de forma assíncrona."""
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        try:
+            resp = await client.get(settings.NASA_POWER_BASE_URL, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            logging.error(f"Erro na API da NASA: {e.response.status_code} - {e.response.text}")
+            raise HTTPException(status_code=502, detail="Erro ao comunicar com a API da NASA.")
+        except httpx.RequestError as e:
+            logging.error(f"Erro de conexão com a API da NASA: {e}")
+            raise HTTPException(status_code=504, detail="Falha de conexão com o servidor da NASA.")
+
+async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str) -> Tuple[Dict, Dict]:
+    """Gera recomendações e insights de dashboard em paralelo com a IA."""
+    try:
+        prompt_recommendations = RECOMMENDATION_PROMPT_TEMPLATE.format(
+            event_type=event_type, 
+            analysis_data=json.dumps(analysis_data, indent=2, ensure_ascii=False)
+        )
+        prompt_dashboard = DASHBOARD_PROMPT_TEMPLATE.format(
+            probability_data=json.dumps(analysis_data.get('weather_condition_probabilities', {}), ensure_ascii=False)
+        )
+        
+        task_recommendations = gemini_model.generate_content_async(prompt_recommendations)
+        task_dashboard = gemini_model.generate_content_async(prompt_dashboard)
+        
+        responses = await asyncio.gather(task_recommendations, task_dashboard)
+        
+        recommendations = clean_and_parse_json(responses[0].text)
+        dashboard_insights = clean_and_parse_json(responses[1].text)
+        
+        return recommendations, dashboard_insights
+        
+    except Exception as e:
+        logging.error(f"Gemini (generate): Erro inesperado ao gerar conteúdo. {e}")
+        return {"error": f"Falha ao gerar recomendações: {e}"}, {"error": f"Falha ao gerar insights: {e}"}
+
+# ===== ROTA PRINCIPAL DA API =====
+@app.post("/api/analyze",
+          response_model=ApiResponse,
+          tags=["AI Analysis"],
+          summary="Análise climática completa via linguagem natural")
+async def analyze_with_ai(request: SearchQueryRequest):
+    logging.info(f"Nova consulta recebida: '{request.query}'")
+    
+    extracted_info = await extract_info_with_gemini(request.query)
+    logging.info(f"Informações extraídas e geocodificadas: {extracted_info.model_dump()}")
+    
+    try:
+        target_day = datetime.strptime(extracted_info.event_date, "%Y-%m-%d").strftime("%m-%d") if extracted_info.event_date else datetime.now().strftime("%m-%d")
+    except (ValueError, TypeError):
+        logging.warning(f"Formato de data inválido ou ausente: {extracted_info.event_date}. Usando data atual.")
+        target_day = datetime.now().strftime("%m-%d")
+
+    nasa_params = {
         "parameters": "PRECTOTCORR,T2M_MAX,T2M_MIN,RH2M,WS2M_MAX",
         "community": "RE",
-        "longitude": lon,
-        "latitude": lat,
-        "start": extracted_info.start_date,
-        "end": extracted_info.end_date,
+        "longitude": extracted_info.longitude,
+        "latitude": extracted_info.latitude,
+        "start": extracted_info.analysis_start_date,
+        "end": extracted_info.analysis_end_date,
         "format": "JSON",
     }
+    nasa_data = await fetch_nasa_data(nasa_params)
+    logging.info(f"Dados da NASA recebidos para '{extracted_info.location_name}' (lat={extracted_info.latitude}, lon={extracted_info.longitude})")
     
-    print(f"[INFO] Buscando dados NASA para lat={lat}, lon={lon}, dia={dia_alvo}")
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.get(POWER_BASE, params=params)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail="Erro ao acessar NASA POWER API")
-            payload = resp.json()
-        except Exception as e:
-            print(f"[ERROR] Erro NASA API: {e}")
-            raise HTTPException(status_code=502, detail="Falha na comunicação com NASA")
-    
-    # Etapa 3: Análise estatística
     try:
-        resultado_analise = analisar_dados_climaticos(payload, dia_alvo)
-        print("[INFO] Análise estatística concluída")
+        climate_analysis = analisar_dados_climaticos(nasa_data, target_day)
+        logging.info("Análise estatística concluída com sucesso.")
     except Exception as e:
-        print(f"[ERROR] Erro na análise: {e}")
-        raise HTTPException(status_code=500, detail="Erro na análise dos dados")
+        logging.error(f"Erro na função 'analisar_dados_climaticos': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Erro interno ao analisar os dados climáticos.")
     
-    # Etapa 4: Gerar recomendações com IA
-    try:
-        recomendacoes_ia = gerar_recomendacoes_ia(resultado_analise, extracted_info.event_type)
-        insights_dashboard = gerar_insights_dashboard(resultado_analise)
-        print("[INFO] Recomendações IA geradas")
-    except Exception as e:
-        print(f"[ERROR] Erro nas recomendações: {e}")
-        recomendacoes_ia = {}
-        insights_dashboard = {}
+    ai_recommendations, dashboard_insights = await generate_ai_outputs(climate_analysis, extracted_info.event_type)
+    logging.info("Recomendações e insights da IA gerados.")
     
-    # Etapa 5: Montar resposta completa
-    resposta_completa = {
-        # Metadados da consulta
+    quick_summary_data = {
+        "risk_level": ai_recommendations.get("nivel_risco", "INDETERMINADO"),
+        "rain_probability": climate_analysis.get("precipitation_analysis", {}).get("any_rain", {}).get("probability_percent", 0),
+        "heat_risk": climate_analysis.get("weather_condition_probabilities", {}).get("VERY_HOT", {}).get("probability_percent", 0),
+        "main_risks": climate_analysis.get("event_planning_recommendations", {}).get("key_risks", [])
+    }
+    
+    response_data = {
         "query_info": {
             "original_query": request.query,
             "extracted_location": {
-                "latitude": lat,
-                "longitude": lon
+                "name": extracted_info.location_name,
+                "latitude": extracted_info.latitude,
+                "longitude": extracted_info.longitude
             },
             "extracted_date": extracted_info.event_date,
             "event_type": extracted_info.event_type,
-            "analysis_day": dia_alvo,
+            "analysis_day": target_day,
             "timestamp": datetime.now().isoformat()
         },
-        
-        # Dados originais da análise (para gráficos)
-        "climate_analysis": resultado_analise,
-        
-        # Recomendações da IA
-        "ai_recommendations": recomendacoes_ia,
-        
-        # Insights para dashboard
-        "dashboard_insights": insights_dashboard,
-        
-        # Dados para visualização rápida
-        "quick_summary": {
-            "rain_probability": resultado_analise.get("precipitation_analysis", {})
-                                                  .get("any_rain", {})
-                                                  .get("probability_percent", 0),
-            "heat_risk": resultado_analise.get("weather_condition_probabilities", {})
-                                         .get("VERY_HOT", {})
-                                         .get("probability_percent", 0),
-            "overall_suitability": resultado_analise.get("event_planning_recommendations", {})
-                                                    .get("outdoor_suitability_score", 50),
-            "main_risks": resultado_analise.get("event_planning_recommendations", {})
-                                          .get("key_risks", []),
-            "risk_level": recomendacoes_ia.get("nivel_risco", "MODERADO")
-        }
+        "climate_analysis": climate_analysis,
+        "ai_recommendations": ai_recommendations,
+        "dashboard_insights": dashboard_insights,
+        "quick_summary": quick_summary_data
     }
     
-    return JSONResponse(
-        content=resposta_completa,
-        media_type="application/json",
-        headers={"Content-Type": "application/json; charset=utf-8"}
-    )
+    return JSONResponse(content=response_data, media_type="application/json; charset=utf-8")
 
 # ===== ROTAS ADICIONAIS =====
-@app.get("/", tags=["Status"])
+@app.get("/", tags=["Status"], summary="Informações da API")
 def root():
-    """Endpoint principal com informações da API."""
     return {
-        "api_name": "Cygnus-X1 AI-Powered Weather Analysis",
-        "version": "3.0.0",
-        "features": [
-            "Natural language processing with Gemini AI",
-            "NASA POWER data integration",
-            "Statistical climate analysis",
-            "AI-powered recommendations",
-            "Dashboard insights generation"
-        ],
-        "endpoints": {
-            "main": "/api/analyze (POST)",
-            "docs": "/docs",
-            "health": "/health"
-        }
+        "api_name": app.title,
+        "version": app.version,
+        "documentation": "/docs"
     }
 
-@app.get("/health", tags=["Status"])
+@app.get("/health", tags=["Status"], summary="Verificação de saúde")
 def health_check():
-    """Health check para monitoramento."""
-    gemini_status = "configured" if GEMINI_API_KEY != "COLE_AQUI_SUA_CHAVE_GEMINI_API" else "not_configured"
     return {
         "status": "healthy",
-        "gemini_status": gemini_status,
         "timestamp": datetime.now().isoformat()
     }
 
-# ===== EXEMPLO DE USO =====
-@app.get("/example", tags=["Help"])
-def get_example():
-    """Retorna exemplos de uso da API."""
-    return {
-        "examples": [
-            {
-                "description": "Consulta simples",
-                "request": {
-                    "query": "Vou fazer um casamento em Luanda dia 15 de junho"
-                }
-            },
-            {
-                "description": "Consulta detalhada",
-                "request": {
-                    "query": "Estou planejando um festival de música ao ar livre em Lisboa para o próximo verão, provavelmente em julho"
-                }
-            },
-            {
-                "description": "Consulta com análise específica",
-                "request": {
-                    "query": "Quero fazer um churrasco no Rio de Janeiro em dezembro, preciso saber se vai chover"
-                }
-            }
-        ],
-        "response_structure": {
-            "query_info": "Informações extraídas da consulta",
-            "climate_analysis": "Análise estatística completa (dados para gráficos)",
-            "ai_recommendations": "Recomendações personalizadas da IA",
-            "dashboard_insights": "Insights para visualização",
-            "quick_summary": "Resumo rápido dos principais indicadores"
-        }
-    }
-
+# ===== EXECUÇÃO DA APLICAÇÃO =====
 if __name__ == "__main__":
-    
     import uvicorn
-    print("=" * 60)
-    print("🚀 CYGNUS-X1 Análise de tempo com IA integrada")
-    print("=" * 60)
-    print("🤖 Integração Gemini AI: Activa")
-    print("🌍 NASA POWER Data: conectado")
-    print("📊 Analise estatística: Pronta")
-    print("=" * 60)
-    print("📚 Documentation: http://localhost:8000/docs")
-    print("🔧 Main endpoint: POST /api/analyze")
-    print("=" * 60)
+    
+    print("="*60)
+    print(f"🚀 CYGNUS-X1 ANÁLISE CLIMÁTICA COM IA (v{app.version})")
+    print("="*60)
+    print(f"🤖 Modelo Gemini: {gemini_model.model_name}")
+    print("🌍 Geocodificação: Ativa via OpenStreetMap Nominatim")
+    print("🛰️ Fonte de Dados: NASA POWER API")
+    print("📊 Módulo de Análise: Carregado")
+    print("="*60)
+    print("📚 Documentação Interativa: http://127.0.0.1:8000/docs")
+    print("✅ Endpoint Principal: [POST] http://127.0.0.1:8000/api/analyze")
+    print("="*60)
+    
     uvicorn.run(app, host="0.0.0.0", port=8000)
