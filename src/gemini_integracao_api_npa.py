@@ -23,7 +23,7 @@ from pydantic_settings import BaseSettings
 # <<< CORREÇÃO: Lógica de importação simplificada para maior robustez.
 try:
     # Assume que 'analise_clima.py' está no mesmo diretório.
-    from analise_clima import analisar_dados_climaticos
+    from src.analise_clima import analisar_dados_climaticos
 except (ImportError, ModuleNotFoundError):
     logging.exception("FALHA CRÍTICA AO IMPORTAR 'analise_clima'. Verifique se o ficheiro 'analise_clima.py' existe na mesma pasta. Usando função mock.")
     def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
@@ -51,7 +51,7 @@ except ValueError as e:
 if genai:
     try:
         # Usando um modelo mais recente e válido
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        gemini_model = genai.GenerativeModel('gemma-3-4b-it')
     except Exception as e:
         gemini_model = None; logging.warning(f"Não foi possível inicializar o modelo Gemini: {e}")
 else:
