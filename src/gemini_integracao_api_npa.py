@@ -20,10 +20,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-# <<< CORREÇÃO: Lógica de importação simplificada para maior robustez.
+# <<< MELHORIA: Lógica de importação simplificada para maior robustez.
 try:
     # Assume que 'analise_clima.py' está no mesmo diretório.
-    from src.analise_clima import analisar_dados_climaticos
+    from analise_clima import analisar_dados_climaticos
 except (ImportError, ModuleNotFoundError):
     logging.exception("FALHA CRÍTICA AO IMPORTAR 'analise_clima'. Verifique se o ficheiro 'analise_clima.py' existe na mesma pasta. Usando função mock.")
     def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
@@ -100,8 +100,25 @@ Retorne APENAS um objeto JSON com a estrutura especificada:
 """
 
 DASHBOARD_PROMPT_TEMPLATE = """
-...
-""" # (Sem alterações no prompt do dashboard)
+Com base nos dados de probabilidade de condições climáticas, gere insights para um dashboard.
+Retorne APENAS um objeto JSON com a estrutura especificada, sem explicações ou markdown.
+
+Dados de Probabilidade:
+{probability_data}
+
+Estrutura JSON de saída:
+{{
+    "headline": "<título impactante de 5-10 palavras sobre o clima>",
+    "score_geral": 75,
+    "emoji_clima": "<único emoji que representa o clima geral>",
+    "cor_tema": "<código de cor hexadecimal (ex: #4A90E2)>",
+    "tags": ["<lista de 3-5 tags relevantes (ex: 'Sol', 'Risco de Chuva')>"],
+    "grafico_recomendado": "bar",
+    "metricas_chave": [
+        {{"nome": "Prob. Chuva", "valor": "15%", "tendencia": "stable"}}
+    ]
+}}
+"""
 
 # ===== CONFIGURAÇÃO DA API FASTAPI =====
 app = FastAPI(title="Cygnus-X1 AI-Powered Weather Analysis", version="3.6.0")
@@ -126,7 +143,6 @@ class ApiResponse(BaseModel):
     query_info: Dict[str, Any]; climate_analysis: Dict[str, Any]; ai_recommendations: Dict[str, Any]; dashboard_insights: Dict[str, Any]; quick_summary: QuickSummary
 
 # ===== FUNÇÕES AUXILIARES =====
-# ... (clean_and_parse_json e get_coords_from_location_name sem alterações) ...
 def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
     json_str = raw_text.strip().removeprefix("```json").removesuffix("```").strip()
     try: return json.loads(json_str)
@@ -174,7 +190,6 @@ async def extract_info_with_gemini(query: str) -> ExtractedInfo:
     )
 
 async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
-    # ... (Sem alterações) ...
     async with httpx.AsyncClient(timeout=45.0) as client:
         try:
             resp = await client.get(settings.NASA_POWER_BASE_URL, params=params); resp.raise_for_status(); return resp.json()
@@ -225,11 +240,8 @@ async def analyze_with_ai(request: SearchQueryRequest):
     nasa_params = {"parameters": "PRECTOTCORR,T2M_MAX,T2M_MIN,RH2M,WS2M_MAX", "community": "RE", "longitude": extracted_info.longitude, "latitude": extracted_info.latitude, "start": extracted_info.analysis_start_date, "end": extracted_info.analysis_end_date, "format": "JSON"}
     nasa_data = await fetch_nasa_data(nasa_params)
     
-    # Este 'try' é crucial, pois a função real de análise é chamada aqui.
     try:
         climate_analysis = analisar_dados_climaticos(nasa_data, target_day)
-        if "mock_data" in climate_analysis:
-            logging.warning("A análise climática retornou dados MOCK. Verifique a lógica de importação ou o ficheiro 'analise_clima.py'.")
     except Exception as e:
         logging.error(f"Erro na função 'analisar_dados_climaticos': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Erro interno ao analisar os dados climáticos.")
@@ -268,12 +280,14 @@ async def analyze_with_ai(request: SearchQueryRequest):
     
     return JSONResponse(content=response_data, media_type="application/json; charset=utf-8")
 
-# ... (Rotas de status e execução sem alterações) ...
+# ===== ROTAS DE STATUS =====
 @app.get("/", tags=["Status"])
 def root(): return {"api_name": app.title, "version": app.version, "documentation": "/docs"}
+
 @app.get("/health", tags=["Status"])
 def health_check(): return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
+# ===== EXECUÇÃO DA APLICAÇÃO =====
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
