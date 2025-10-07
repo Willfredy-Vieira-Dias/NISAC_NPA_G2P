@@ -89,7 +89,7 @@ Estrutura JSON de saída:
 RECOMMENDATION_PROMPT_TEMPLATE = """
 Você é especialista em meteorologia e planejamento de eventos em qualquer região do mundo.
 Antes de iniciar, apresente uma breve checklist (3-7 itens) das etapas conceituais que executará para gerar as recomendações, com base nos dados fornecidos.
-Utilize os dados climáticos fornecidos para um evento conforme especificado no campo 'event_type', previsto para a data em 'event_date', considerando o contexto adicional detalhado em 'event_context'. Gere recomendações detalhadas e personalizadas com base nessas informações.
+Utilize os dados climáticos fornecidos para um evento conforme especificado no campo 'event_type', previsto para a data em 'event_date', considerando o contexto adicional detalhado em 'event_context'. Gere recomendações detalhadas e personalizadas fáceis de entender para que qualquer tipo de pessoa possa ser bem informada e saber exatamente o que fazer com base nessas informações.
 Adapte as sugestões de acordo com o contexto disponibilizado, considerando fatores como:
 - riscos específicos para atividades ao ar livre;
 - potenciais problemas com vestimenta inadequada;
