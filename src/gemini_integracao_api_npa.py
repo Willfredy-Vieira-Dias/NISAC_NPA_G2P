@@ -8,7 +8,11 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
 
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+    logging.warning("Biblioteca 'google.generativeai' não disponível; funcionalidades de IA podem ficar limitadas.")
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,13 +21,36 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 # Importa o módulo de análise existente (assumimos que este arquivo existe e funciona)
+import sys
+import os
+
+# Small diagnostic output to help in environments like Render where PYTHONPATH
+# or working directory may differ. These logs will show at import time.
+_startup_info = {
+    'cwd': os.getcwd(),
+    'sys_path': list(sys.path)[:10]  # show first 10 entries to avoid huge logs
+}
+print(f"[startup] cwd={_startup_info['cwd']}")
+print(f"[startup] sys.path (top 10)={_startup_info['sys_path']}")
+
+# Try a relative import first (works when this file is used as part of the `src` package).
 try:
-    from src.analise_clima import analisar_dados_climaticos
-except ImportError:
-    # Função mock caso o arquivo não exista, para permitir que a API inicie
-    def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
-        logging.warning("Módulo 'analise_clima' não encontrado. Usando dados mock.")
-        return {"mock_data": "análise não pôde ser realizada", "dia_alvo": dia_alvo}
+    # Ensure project root is available on sys.path for environments that start
+    # the app from a different working directory (Render, Gunicorn, etc.).
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from .analise_clima import analisar_dados_climaticos  # type: ignore
+except Exception:
+    # Fall back to absolute import which can work when project root is on PYTHONPATH
+    try:
+        from src.analise_clima import analisar_dados_climaticos  # type: ignore
+    except Exception as ex:
+        logging.exception("Falha ao importar 'analise_clima' via relative or absolute import.")
+        # Função mock caso o arquivo não exista, para permitir que a API inicie
+        def analisar_dados_climaticos(payload: Dict, dia_alvo: str) -> Dict:
+            logging.warning("Módulo 'analise_clima' não encontrado. Usando dados mock.")
+            return {"mock_data": "análise não pôde ser realizada", "dia_alvo": dia_alvo}
 
 # ===== CONFIGURAÇÃO DE LOGGING =====
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
@@ -44,13 +71,24 @@ class Settings(BaseSettings):
 
 try:
     settings = Settings()
-    genai.configure(api_key=settings.GEMINI_API_KEY)
+    if genai is not None:
+        try:
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+        except Exception as e:
+            logging.warning(f"Falha ao configurar google.generativeai: {e}")
 except ValueError as e:
     logging.error(f"Erro ao carregar configurações: {e}")
     raise
 
 # ===== CONFIGURAÇÃO DO MODELO GEMINI =====
-gemini_model = genai.GenerativeModel('models/gemma-3-4b-it')
+if genai is not None:
+    try:
+        gemini_model = genai.GenerativeModel('models/gemma-3-4b-it')
+    except Exception:
+        gemini_model = None
+        logging.warning("Não foi possível inicializar o modelo Gemini; chamadas à IA retornarão mensagens de erro mock.")
+else:
+    gemini_model = None
 
 
 # ===== PROMPTS PARA A IA (ATUALIZADO) =====
