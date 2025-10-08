@@ -76,9 +76,3 @@ Confirm that the path shown is the repository root containing `src`.
 - Fail-fast behavior at startup (raise if critical imports missing) instead of mock fallback.
 - Health-check endpoint that ensures critical modules are importable and returns non-healthy state if not.
 - CI job that tests `python -c "import src.analise_clima"` so import regressions are caught early.
-
----
-If you want, eu posso adicionar o README.md ao repo (feito) e também:
-- incluir um health-check que valida imports (rápido e útil em produção);
-- ou remover o mock e forçar um erro em produção para evitar que problemas passem despercebidos.
-Diga qual opção prefere e eu implemento.
