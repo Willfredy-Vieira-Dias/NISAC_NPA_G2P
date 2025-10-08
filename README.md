@@ -71,8 +71,3 @@ Confirm that the path shown is the repository root containing `src`.
 - Copy the startup `cwd` and `sys.path` values from the Render logs and share them here so I can advise further.
 - Ensure `src` is present at that `cwd` (Render may be using a different build directory).
 - Confirm that the start command in Render uses the repository root as working directory.
-
-## Optional hardening (I can add)
-- Fail-fast behavior at startup (raise if critical imports missing) instead of mock fallback.
-- Health-check endpoint that ensures critical modules are importable and returns non-healthy state if not.
-- CI job that tests `python -c "import src.analise_clima"` so import regressions are caught early.
