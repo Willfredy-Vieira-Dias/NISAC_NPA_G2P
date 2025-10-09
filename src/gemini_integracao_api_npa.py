@@ -59,7 +59,7 @@ except ValueError as e:
 # ===== CONFIGURAÇÃO DO MODELO GEMINI =====
 if genai:
     try:
-        gemini_model = genai.GenerativeModel('gemma-3-4b-it')
+        gemini_model = genai.GenerativeModel('gemma-3-27b-it')
     except Exception as e:
         gemini_model = None
         logging.warning(f"Não foi possível inicializar o modelo Gemini: {e}")
