@@ -6,6 +6,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from datetime import datetime
 import logging
+from pydantic import BaseModel, ValidationError
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
@@ -80,6 +81,82 @@ def _calcular_probabilidade(series: pd.Series, threshold: float, operator: str =
         raise ValueError("Operador inválido. Use '>' ou '<'.")
         
     return (condicao.sum() / total_validos) * 100
+
+
+def _bootstrap_confidence_interval(series: pd.Series, threshold: float, operator: str = '>', n_boot: int = 1000, alpha: float = 0.05) -> Tuple[float, float, float]:
+    """Retorna (point_estimate, lower_pct, upper_pct) em percentuais usando bootstrap simples."""
+    # Remover NaNs
+    vals = series.dropna()
+    if vals.empty:
+        return 0.0, 0.0, 0.0
+
+    import random
+    estimates = []
+    for _ in range(n_boot):
+        sample = vals.sample(frac=1.0, replace=True)
+        est = _calcular_probabilidade(sample, threshold, operator)
+        estimates.append(est)
+
+    estimates_sorted = sorted(estimates)
+    lower = estimates_sorted[int((alpha/2) * len(estimates_sorted))]
+    upper = estimates_sorted[int((1 - alpha/2) * len(estimates_sorted)) - 1]
+    point = _calcular_probabilidade(vals, threshold, operator)
+    return point, lower, upper
+
+
+def _mann_kendall_trend(series: pd.Series) -> Dict[str, Any]:
+    """Implementação simples do teste de Mann-Kendall e Sen's slope para detetar tendência.
+
+    Retorna dicionário com 'trend' (AQUECENDO/ESFRIANDO/ESTÁVEL), p_value_approx e sens_slope.
+    """
+    x = series.dropna().values
+    n = len(x)
+    if n < 10:
+        return {"trend": "INSUFICIENTE", "p_value_approx": None, "sens_slope": None}
+
+    # Mann-Kendall S statistic
+    s = 0
+    for k in range(n - 1):
+        for j in range(k + 1, n):
+            if x[j] > x[k]: s += 1
+            elif x[j] < x[k]: s -= 1
+
+    # variance approximation (assume no ties)
+    var_s = (n*(n-1)*(2*n+5)) / 18.0
+    if var_s == 0:
+        return {"trend": "INSUFICIENTE", "p_value_approx": None, "sens_slope": None}
+
+    from math import erf, sqrt
+    z = 0
+    if s > 0:
+        z = (s - 1) / sqrt(var_s)
+    elif s < 0:
+        z = (s + 1) / sqrt(var_s)
+    else:
+        z = 0
+
+    # two-sided p-value approximation from z (normal)
+    p_value = 1.0 - 0.5*(1 + erf(abs(z)/sqrt(2)))
+
+    # Sen's slope median of pairwise slopes
+    slopes = []
+    for i in range(n - 1):
+        for j in range(i+1, n):
+            denom = (j - i)
+            if denom != 0:
+                slopes.append((x[j] - x[i]) / denom)
+    sens_slope = float(np.median(slopes)) if slopes else None
+
+    if sens_slope is None:
+        trend = "ESTÁVEL"
+    elif sens_slope > THRESHOLDS['trends']['temp_change_threshold']:
+        trend = "AQUECENDO"
+    elif sens_slope < -THRESHOLDS['trends']['temp_change_threshold']:
+        trend = "ESFRIANDO"
+    else:
+        trend = "ESTÁVEL"
+
+    return {"trend": trend, "p_value_approx": p_value, "sens_slope": sens_slope}
 
 def _calcular_estatisticas(df: pd.DataFrame) -> Dict[str, Any]:
     """Calcula as principais estatísticas históricas a partir do DataFrame."""
@@ -205,9 +282,28 @@ def analisar_dados_climaticos(json_data: Dict[str, Any], dia_alvo: str) -> Dict[
         ]
         probabilidades["prob_desconforto"] = (len(dias_desconfortaveis) / total_anos) * 100 if total_anos > 0 else 0.0
 
+        # Adicionar intervalos de confiança via bootstrap para algumas probabilidades-chave
+        try:
+            point_any, low_any, high_any = _bootstrap_confidence_interval(df_dia['precipitacao_mm'], THRESHOLDS["precipitation"]["light_mm"], operator='>')
+            probabilidades["prob_qualquer_chuva_ci"] = {"point": _safe_round(point_any), "lower": _safe_round(low_any), "upper": _safe_round(high_any)}
+        except Exception as e:
+            logging.debug(f"Falha ao calcular bootstrap CI: {e}")
+
+        try:
+            point_hot, low_hot, high_hot = _bootstrap_confidence_interval(df_dia['temp_max_c'], THRESHOLDS["temperature"]["very_hot_c"], operator='>')
+            probabilidades["prob_muito_quente_ci"] = {"point": _safe_round(point_hot), "lower": _safe_round(low_hot), "upper": _safe_round(high_hot)}
+        except Exception as e:
+            logging.debug(f"Falha ao calcular bootstrap CI (hot): {e}")
+
         # 4. Calcular Estatísticas e Tendências
         estatisticas = _calcular_estatisticas(df_dia)
         tendencia_temp, tendencia_precip = _analisar_tendencias(df_dia)
+        # Mann-Kendall e Sen's slope para temperatura máxima histórica
+        try:
+            mk_temp = _mann_kendall_trend(df_dia['temp_max_c'])
+            estatisticas['temperature']['mann_kendall'] = mk_temp
+        except Exception as e:
+            logging.debug(f"Falha ao calcular Mann-Kendall: {e}")
         
         # 5. Gerar Recomendações
         recomendacoes = _gerar_recomendacoes(probabilidades)
@@ -256,6 +352,24 @@ def analisar_dados_climaticos(json_data: Dict[str, Any], dia_alvo: str) -> Dict[
                 "confidence_level": "HIGH" if total_anos >= 20 else "MODERATE" if total_anos >= 10 else "LOW",
             }
         }
+        # Validar estrutura do resultado antes de retornar
+        try:
+            class AnalysisResultModel(BaseModel):
+                nasa_challenge_compliance: Dict[str, Any]
+                query_parameters: Dict[str, Any]
+                weather_condition_probabilities: Dict[str, Any]
+                precipitation_analysis: Dict[str, Any]
+                historical_statistics: Dict[str, Any]
+                climate_change_indicators: Dict[str, Any]
+                event_planning_recommendations: Dict[str, Any]
+                threshold_configurations: Dict[str, Any]
+                response_metadata: Dict[str, Any]
+
+            AnalysisResultModel(**resultado)
+        except ValidationError as ve:
+            logging.error(f"Validação do resultado falhou: {ve}")
+            return {"status": "ERRO", "erro": f"Resultado da análise inválido: {ve}"}
+
         return resultado
 
     except (KeyError, ValueError) as e:

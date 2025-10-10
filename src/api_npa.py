@@ -5,6 +5,9 @@ import logging
 import traceback
 from datetime import datetime
 from typing import Any, Dict, Optional
+import os
+import json
+import asyncio
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Depends
@@ -122,7 +125,10 @@ def _normalize_dia_alvo(dia_alvo: Optional[str], fallback_date_str: str) -> str:
     raise ValueError("Formato de 'dia_alvo' inválido. Use 'MM-DD', 'YYYY-MM-DD' ou 'YYYYMMDD'.")
 
 async def _fetch_nasa_power_data(params: ClimateQueryParams) -> Dict[str, Any]:
-    """Busca e valida os dados da API NASA POWER de forma isolada."""
+    """Busca e valida os dados da API NASA POWER com retries e cache em disco opcional.
+
+    Para ativar o cache em disco defina a variável de ambiente `NASA_CACHE_DIR`.
+    """
     api_params = {
         "parameters": "PRECTOTCORR,T2M_MAX,T2M_MIN,RH2M,WS2M_MAX",
         "community": "RE",
@@ -132,20 +138,60 @@ async def _fetch_nasa_power_data(params: ClimateQueryParams) -> Dict[str, Any]:
         "end": params.end,
         "format": "JSON",
     }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
+
+    # Cache em disco (opcional)
+    cache_dir = os.environ.get("NASA_CACHE_DIR")
+    cache_path = None
+    if cache_dir:
         try:
-            logging.info(f"A contactar a API da NASA POWER para lat={params.lat}, lon={params.lon}")
-            resp = await client.get(settings.NASA_POWER_BASE_URL, params=api_params)
-            resp.raise_for_status()  # <<< MELHORIA: Lança exceção para erros HTTP (4xx, 5xx)
-            logging.info("Dados da NASA recebidos com sucesso.")
-            return resp.json()
-        except httpx.HTTPStatusError as exc:
-            logging.error(f"Erro da API da NASA: {exc.response.status_code} - {exc.response.text}")
-            raise HTTPException(status_code=502, detail="Erro ao comunicar com a API da NASA.")
-        except httpx.RequestError as exc:
-            logging.error(f"Erro de rede ao contactar a NASA: {exc}")
-            raise HTTPException(status_code=504, detail="Falha de conexão com o servidor da NASA.")
+            os.makedirs(cache_dir, exist_ok=True)
+            key = f"nasa_{params.lat}_{params.lon}_{params.start}_{params.end}".replace('.', '_')
+            cache_path = os.path.join(cache_dir, f"{key}.json")
+            if os.path.exists(cache_path):
+                logging.info(f"Carregando resposta da NASA a partir do cache: {cache_path}")
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            logging.warning(f"Falha ao usar cache em disco: {e}")
+
+    # Retries com backoff exponencial
+    max_attempts = 3
+    backoff_base = 1.0
+    last_exc = None
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logging.info(f"A contactar a API da NASA POWER para lat={params.lat}, lon={params.lon} (tentativa {attempt})")
+                resp = await client.get(settings.NASA_POWER_BASE_URL, params=api_params)
+                resp.raise_for_status()
+                data = resp.json()
+                logging.info("Dados da NASA recebidos com sucesso.")
+                if cache_path:
+                    try:
+                        with open(cache_path, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False)
+                    except Exception as e:
+                        logging.warning(f"Falha ao gravar cache em disco: {e}")
+                return data
+            except httpx.HTTPStatusError as exc:
+                logging.error(f"Erro da API da NASA: {exc.response.status_code} - {exc.response.text}")
+                last_exc = HTTPException(status_code=502, detail="Erro ao comunicar com a API da NASA.")
+                break
+            except httpx.RequestError as exc:
+                logging.warning(f"Erro de rede ao contactar a NASA (tentativa {attempt}): {exc}")
+                last_exc = HTTPException(status_code=504, detail="Falha de conexão com o servidor da NASA.")
+                if attempt < max_attempts:
+                    sleep_for = backoff_base * (2 ** (attempt - 1))
+                    logging.info(f"A aguardar {sleep_for}s antes da próxima tentativa...")
+                    await asyncio.sleep(sleep_for)
+                    continue
+                break
+
+    # Se chegou aqui, houve uma falha irreparável
+    if last_exc:
+        raise last_exc
+    raise HTTPException(status_code=500, detail="Falha desconhecida ao obter dados da NASA.")
 
 
 # --- Endpoints da API ---
