@@ -85,7 +85,7 @@ Você é um assistente especialista em extrair e contextualizar nomes de locais,
 Analise a consulta do usuário e retorne APENAS um objeto JSON com a seguinte estrutura.
 O mais importante é extrair um nome de local o mais específico possível para evitar ambiguidade.
 Para locais globais ou famosos (ex: Polo Norte, Monte Everest, Deserto do Saara), adicione um contexto geográfico.
-Extraia também o contexto adicional do evento, como condições específicas (ex: sem roupa adequada, descalço, vendado, distância de caminhada, atividades como pular).
+Extraia também o contexto adicional do evento e categorize a atividade principal (ex: 'caminhada longa', 'festa social', 'evento desportivo').
 
 Consulta: "{query}"
 
@@ -93,16 +93,19 @@ Estrutura JSON de saída:
 {{
     "location_name": "<o nome do local o mais completo possível, ex: 'Polo Norte Geográfico, Ártico', 'Benguela, Angola', 'Torre Eiffel, Paris, França'>",
     "event_date": "<data no formato YYYY-MM-DD ou null>",
-    "event_type": "<tipo de evento ou null>",
-    "event_context": "<descrição detalhada do contexto adicional extraído, ex: 'sem camisola e com os pés descalços, com olhos vendados, uns 45km de caminhada, pulando alto'>"
+    "event_type": "<ex: 'Festa de Aniversário', 'Casamento', 'Corrida de Montanha'>",
+    "event_context": "<descrição detalhada do contexto adicional extraído, ex: 'sem camisola e com os pés descalços, com olhos vendados, uns 45km de caminhada, pulando alto'>",
+    "activity_category": "<'Endurance', 'Social', 'Lazer', 'Construção', 'Outro'>"
 }}
 """
 
 # <<< MELHORIA: Adicionado {event_context} para personalizar as recomendações com base no contexto extraído.
 RECOMMENDATION_PROMPT_TEMPLATE = """
-Você é especialista em meteorologia e planejamento de eventos em qualquer região do mundo.
-Antes de iniciar, apresente uma breve checklist (3-7 itens) das etapas conceituais que executará para gerar as recomendações, com base nos dados fornecidos.
-Utilize os dados climáticos fornecidos para um evento conforme especificado no campo 'event_type', previsto para a data em 'event_date', considerando o contexto adicional detalhado em 'event_context'. Gere recomendações detalhadas e personalizadas fáceis de entender para que qualquer tipo de pessoa possa ser bem informada e saber exatamente o que fazer com base nessas informações.
+Você é "AURA", uma assistente especialista em meteorologia e planeamento de eventos da Cygnus-X1. A sua missão é traduzir dados climáticos complexos em conselhos práticos, claros e acionáveis para qualquer pessoa. Seja empática e direta.
+
+NÃO use jargão técnico. NÃO inclua a frase "Com base nos dados fornecidos". Vá direto ao ponto.
+
+Utilize os dados climáticos fornecidos para um evento do tipo '{event_type}' e categoria '{activity_category}', previsto para a data em '{event_date}', considerando o contexto adicional detalhado em '{event_context}'. Gere recomendações detalhadas e personalizadas fáceis de entender para que qualquer tipo de pessoa possa ser bem informada e saber exatamente o que fazer com base nessas informações.
 Adapte as sugestões de acordo com o contexto disponibilizado, considerando fatores como:
 - riscos específicos para atividades ao ar livre;
 - potenciais problemas com vestimenta inadequada;
@@ -172,7 +175,7 @@ app.add_middleware(
 class SearchQueryRequest(BaseModel):
     query: str = Field(..., description="Consulta em linguagem natural do usuário.", min_length=10)
 class ExtractedInfo(BaseModel):
-    latitude: float; longitude: float; location_name: str; event_date: Optional[str] = None; event_type: str = "evento"; event_context: str = ""; analysis_start_date: str; analysis_end_date: str
+    latitude: float; longitude: float; location_name: str; event_date: Optional[str] = None; event_type: str = "evento"; event_context: str = ""; activity_category: str = "Outro"; analysis_start_date: str; analysis_end_date: str
 class QuickSummary(BaseModel):
     risk_level: str; rain_probability: float; heat_risk: float; main_risks: List[str]
 
@@ -445,7 +448,7 @@ async def extract_info_with_gemini(query: str) -> ExtractedInfo:
         lat, lon = await get_coords_from_location_name(location_name)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return ExtractedInfo(latitude=lat, longitude=lon, location_name=location_name, event_date=data.get("event_date"), event_type=data.get("event_type") or "evento", event_context=data.get("event_context") or "", analysis_start_date=f"{settings.DEFAULT_ANALYSIS_START_YEAR}0101", analysis_end_date=f"{settings.DEFAULT_ANALYSIS_END_YEAR}1231")
+    return ExtractedInfo(latitude=lat, longitude=lon, location_name=location_name, event_date=data.get("event_date"), event_type=data.get("event_type") or "evento", event_context=data.get("event_context") or "", activity_category=data.get("activity_category") or "Outro", analysis_start_date=f"{settings.DEFAULT_ANALYSIS_START_YEAR}0101", analysis_end_date=f"{settings.DEFAULT_ANALYSIS_END_YEAR}1231")
 
 async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
     """Busca dados da NASA POWER com retries e cache em disco opcional."""
@@ -499,7 +502,7 @@ async def fetch_nasa_data(params: Dict[str, Any]) -> Dict[str, Any]:
     raise HTTPException(status_code=500, detail="Falha desconhecida ao obter dados da NASA.")
 
 # <<< MELHORIA: A função agora aceita `event_context` além de `event_date` para dar contexto à IA.
-async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str, event_date: Optional[str], event_context: str) -> Tuple[Dict, Dict]:
+async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str, event_date: Optional[str], event_context: str, activity_category: str) -> Tuple[Dict, Dict]:
     # Cria uma string de data mais legível para a IA, ou um fallback genérico
     if event_date:
         try:
@@ -516,6 +519,7 @@ async def generate_ai_outputs(analysis_data: Dict[str, Any], event_type: str, ev
             event_type=event_type,
             event_date=date_str_formatada,
             event_context=event_context,
+            activity_category=activity_category,
             analysis_data=json.dumps(analysis_data, indent=2, ensure_ascii=False)
         )
         prompt_dashboard = DASHBOARD_PROMPT_TEMPLATE.format(
@@ -570,7 +574,8 @@ async def analyze_with_ai(request: SearchQueryRequest):
         climate_analysis,
         extracted_info.event_type,
         extracted_info.event_date,
-        extracted_info.event_context
+        extracted_info.event_context,
+        extracted_info.activity_category
     )
     logging.info("Recomendações e insights da IA gerados.")
     
@@ -592,6 +597,7 @@ async def analyze_with_ai(request: SearchQueryRequest):
             "extracted_date": extracted_info.event_date,
             "event_type": extracted_info.event_type,
             "event_context": extracted_info.event_context,
+            "activity_category": extracted_info.activity_category,
             "analysis_day": target_day,
             "timestamp": datetime.now().isoformat()
         },

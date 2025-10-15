@@ -10,6 +10,7 @@ import json
 import asyncio
 
 import httpx
+from aiocache import cached
 from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -124,11 +125,9 @@ def _normalize_dia_alvo(dia_alvo: Optional[str], fallback_date_str: str) -> str:
 
     raise ValueError("Formato de 'dia_alvo' inválido. Use 'MM-DD', 'YYYY-MM-DD' ou 'YYYYMMDD'.")
 
+@cached(ttl=3600) # Cache de 1 hora
 async def _fetch_nasa_power_data(params: ClimateQueryParams) -> Dict[str, Any]:
-    """Busca e valida os dados da API NASA POWER com retries e cache em disco opcional.
-
-    Para ativar o cache em disco defina a variável de ambiente `NASA_CACHE_DIR`.
-    """
+    """Busca e valida os dados da API NASA POWER com retries e cache assíncrono."""
     api_params = {
         "parameters": "PRECTOTCORR,T2M_MAX,T2M_MIN,RH2M,WS2M_MAX",
         "community": "RE",
@@ -138,21 +137,6 @@ async def _fetch_nasa_power_data(params: ClimateQueryParams) -> Dict[str, Any]:
         "end": params.end,
         "format": "JSON",
     }
-
-    # Cache em disco (opcional)
-    cache_dir = os.environ.get("NASA_CACHE_DIR")
-    cache_path = None
-    if cache_dir:
-        try:
-            os.makedirs(cache_dir, exist_ok=True)
-            key = f"nasa_{params.lat}_{params.lon}_{params.start}_{params.end}".replace('.', '_')
-            cache_path = os.path.join(cache_dir, f"{key}.json")
-            if os.path.exists(cache_path):
-                logging.info(f"Carregando resposta da NASA a partir do cache: {cache_path}")
-                with open(cache_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except Exception as e:
-            logging.warning(f"Falha ao usar cache em disco: {e}")
 
     # Retries com backoff exponencial
     max_attempts = 3
@@ -167,12 +151,6 @@ async def _fetch_nasa_power_data(params: ClimateQueryParams) -> Dict[str, Any]:
                 resp.raise_for_status()
                 data = resp.json()
                 logging.info("Dados da NASA recebidos com sucesso.")
-                if cache_path:
-                    try:
-                        with open(cache_path, 'w', encoding='utf-8') as f:
-                            json.dump(data, f, ensure_ascii=False)
-                    except Exception as e:
-                        logging.warning(f"Falha ao gravar cache em disco: {e}")
                 return data
             except httpx.HTTPStatusError as exc:
                 logging.error(f"Erro da API da NASA: {exc.response.status_code} - {exc.response.text}")

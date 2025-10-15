@@ -12,3 +12,4 @@ numpy==2.3.3
 chromadb
 sentence-transformers
 pytest-asyncio
+aiocache

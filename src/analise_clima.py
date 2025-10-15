@@ -158,6 +158,19 @@ def _mann_kendall_trend(series: pd.Series) -> Dict[str, Any]:
 
     return {"trend": trend, "p_value_approx": p_value, "sens_slope": sens_slope}
 
+def _calcular_heat_index(temp_c: pd.Series, umidade_perc: pd.Series) -> pd.Series:
+    """Calcula uma aproximação do Índice de Calor (Heat Index)."""
+    # Fórmula de Steadman simplificada (requer conversão para F e depois de volta para C)
+    T_f = temp_c * 9/5 + 32
+    RH = umidade_perc
+    HI_f = 0.5 * (T_f + 61.0 + ((T_f - 68.0) * 1.2) + (RH * 0.094))
+    
+    # Ajustes mais complexos podem ser adicionados aqui se necessário
+    
+    HI_c = (HI_f - 32) * 5/9
+    return HI_c
+
+
 def _calcular_estatisticas(df: pd.DataFrame) -> Dict[str, Any]:
     """Calcula as principais estatísticas históricas a partir do DataFrame."""
     return {
@@ -226,6 +239,10 @@ def _gerar_recomendacoes(probabilidades: Dict[str, float]) -> Dict[str, Any]:
     if probabilidades["prob_muito_frio"] > 50:
         recomendacoes["key_risks"].append("Alta probabilidade de frio")
         recomendacoes["preparation_suggestions"].append("Recomende agasalhos aos participantes")
+
+    if probabilidades.get("prob_muito_frio", 0) > 40 and probabilidades.get("prob_muito_ventoso", 0) > 30:
+        recomendacoes["key_risks"].append("Risco de sensação térmica muito baixa devido ao vento (wind chill)")
+        recomendacoes["preparation_suggestions"].append("Use roupas corta-vento e em camadas")
         
     if probabilidades["prob_muito_ventoso"] > 40:
         recomendacoes["key_risks"].append("Risco moderado a alto de ventos fortes")
@@ -239,10 +256,20 @@ def _gerar_recomendacoes(probabilidades: Dict[str, float]) -> Dict[str, Any]:
         recomendacoes["key_risks"].append("Baixo risco de condições meteorológicas adversas")
         recomendacoes["preparation_suggestions"].append("As condições parecem favoráveis para eventos ao ar livre")
         
-    # Calcular score de adequação para eventos ao ar livre
-    score = 100 - (
-        (probabilidades["prob_chuva_forte"] + probabilidades["prob_muito_quente"] + probabilidades["prob_desconforto"]) / 3
+    # Calcular score de adequação para eventos ao ar livre com pesos
+    peso_chuva_extrema = 1.5
+    peso_calor_extremo = 1.2
+    peso_desconforto = 0.8
+    peso_vento_extremo = 1.0
+
+    risco_total_ponderado = (
+        probabilidades.get("prob_chuva_extrema", 0) * peso_chuva_extrema +
+        probabilidades.get("prob_muito_quente", 0) * peso_calor_extremo +
+        probabilidades.get("prob_desconforto", 0) * peso_desconforto +
+        probabilidades.get("prob_muito_ventoso", 0) * peso_vento_extremo
     )
+    
+    score = max(0, 100 - (risco_total_ponderado / 4))
     recomendacoes["outdoor_suitability_score"] = _safe_round(score, 0)
 
     return recomendacoes
@@ -260,11 +287,14 @@ def analisar_dados_climaticos(json_data: Dict[str, Any], dia_alvo: str) -> Dict[
         
         # 2. Filtrar para o Dia de Interesse
         df_completo['mes_dia'] = df_completo.index.strftime('%m-%d')
-        df_dia = df_completo[df_completo['mes_dia'] == dia_alvo]
+        df_dia = df_completo[df_completo['mes_dia'] == dia_alvo].copy()
         
         total_anos = len(df_dia)
         if total_anos == 0:
             return {"status": "ERRO", "erro": f"Nenhum dado encontrado para o dia {dia_alvo}."}
+
+        # Adicionar cálculo do Heat Index
+        df_dia.loc[:, 'heat_index_c'] = _calcular_heat_index(df_dia['temp_max_c'], df_dia['umidade_perc'])
 
         # 3. Calcular Probabilidades
         probabilidades = {
@@ -275,6 +305,7 @@ def analisar_dados_climaticos(json_data: Dict[str, Any], dia_alvo: str) -> Dict[
             "prob_muito_quente": _calcular_probabilidade(df_dia['temp_max_c'], THRESHOLDS["temperature"]["very_hot_c"]),
             "prob_muito_frio": _calcular_probabilidade(df_dia['temp_min_c'], THRESHOLDS["temperature"]["very_cold_c"], operator='<'),
             "prob_muito_ventoso": _calcular_probabilidade(df_dia['vento_max_ms'], THRESHOLDS["wind"]["very_windy_ms"]),
+            "prob_calor_extremo_sensacao": _calcular_probabilidade(df_dia['heat_index_c'], 38.0), # Sensação térmica > 38°C
         }
         dias_desconfortaveis = df_dia[
             (df_dia['temp_max_c'] > THRESHOLDS["temperature"]["uncomfortable_heat_c"]) & 
@@ -332,7 +363,8 @@ def analisar_dados_climaticos(json_data: Dict[str, Any], dia_alvo: str) -> Dict[
                 "VERY_COLD": {"probability_percent": _safe_round(probabilidades["prob_muito_frio"])},
                 "VERY_WINDY": {"probability_percent": _safe_round(probabilidades["prob_muito_ventoso"])},
                 "VERY_WET": {"probability_percent": _safe_round(probabilidades["prob_chuva_forte"])},
-                "VERY_UNCOMFORTABLE": {"probability_percent": _safe_round(probabilidades["prob_desconforto"])}
+                "VERY_UNCOMFORTABLE": {"probability_percent": _safe_round(probabilidades["prob_desconforto"])},
+                "EXTREME_HEAT_FEEL": {"probability_percent": _safe_round(probabilidades["prob_calor_extremo_sensacao"])},
             },
             "precipitation_analysis": {
                 "any_rain": {"probability_percent": _safe_round(probabilidades["prob_qualquer_chuva"])},
