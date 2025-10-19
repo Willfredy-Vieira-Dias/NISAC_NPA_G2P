@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 import asyncio
+import unicodedata
 
 try:
     import google.generativeai as genai
@@ -222,22 +223,72 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
         raise ValueError("A resposta da IA não continha um JSON válido.")
 
 async def get_coords_from_location_name(location_name: str) -> Tuple[float, float]:
-    if not location_name: raise ValueError("O nome do local não pode ser vazio.")
+    if not location_name:
+        raise ValueError("O nome do local não pode ser vazio.")
+
+    # Preprocess location name
+    location_name = location_name.strip().lower()
+
+    # Normalize accents and special characters
+    location_name = ''.join(
+        c for c in unicodedata.normalize('NFD', location_name) if unicodedata.category(c) != 'Mn'
+    )
+
+    # Remove common stop words
+    stop_words = ["o", "a", "de", "do", "da", "dos", "das", "e"]
+    location_name = ' '.join(word for word in location_name.split() if word not in stop_words)
+
+    # Replace common problematic terms with normalized equivalents
+    replacements = {
+        "deserto": "desert",
+        "floresta": "forest",
+        "montanha": "mountain",
+        "rio": "river",
+        "praia": "beach",
+        "cidade": "city",
+        "vila": "village",
+        "país": "country"
+    }
+
+    for term, replacement in replacements.items():
+        if term in location_name:
+            location_name = location_name.replace(term, replacement)
+
     params = {'q': location_name, 'format': 'json', 'limit': 1}
     headers = {'User-Agent': 'CygnusX1-WeatherApp/1.0', 'Accept-Language': 'en,pt;q=0.9'}
+
     async with httpx.AsyncClient() as client:
         try:
             logging.info(f"Buscando coordenadas para: '{location_name}'")
             response = await client.get(settings.GEOCODING_API_URL, params=params, headers=headers)
             response.raise_for_status()
             data = response.json()
+
             if data and isinstance(data, list):
                 location = data[0]
                 lat, lon = float(location['lat']), float(location['lon'])
                 found_display_name = location.get('display_name', 'N/A')
                 logging.info(f"Coordenadas encontradas para '{location_name}': lat={lat}, lon={lon} (Local: {found_display_name})")
                 return lat, lon
-            else: raise ValueError(f"Nenhuma coordenada encontrada para '{location_name}'.")
+
+            # Fallback mechanism: Try splitting the location name
+            logging.warning(f"Nenhuma coordenada encontrada para '{location_name}'. Tentando fallback com partes do nome.")
+            parts = location_name.split(',')
+            for part in parts:
+                fallback_params = {'q': part.strip(), 'format': 'json', 'limit': 1}
+                fallback_response = await client.get(settings.GEOCODING_API_URL, params=fallback_params, headers=headers)
+                fallback_response.raise_for_status()
+                fallback_data = fallback_response.json()
+
+                if fallback_data and isinstance(fallback_data, list):
+                    fallback_location = fallback_data[0]
+                    lat, lon = float(fallback_location['lat']), float(fallback_location['lon'])
+                    found_display_name = fallback_location.get('display_name', 'N/A')
+                    logging.info(f"Fallback coordenadas encontradas: lat={lat}, lon={lon} (Local: {found_display_name})")
+                    return lat, lon
+
+            raise ValueError(f"Nenhuma coordenada encontrada para '{location_name}' mesmo após fallback.")
+
         except (httpx.RequestError, IndexError, KeyError, TypeError) as e:
             logging.error(f"Erro na API de geocodificação para '{location_name}': {e}")
             raise ValueError(f"Não foi possível obter coordenadas para '{location_name}'. Tente ser mais específico.")
