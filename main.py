@@ -1,12 +1,12 @@
-# main.pycls
-import os
-import uvicorn
 from src.gemini_integracao_api_npa import app
 
-# Esta verificação __name__ == "__main__" é opcional aqui, 
-# mas é uma boa prática. O Gunicorn não a executará diretamente.
+# Export the app variable for Gunicorn
+__all__ = ['app']
+
 if __name__ == "__main__":
-    # Use as configurações do Render ou valores padrão para a porta e host
-    # O Render define a variável de ambiente PORT
+    import os
+    import uvicorn
+    
+    # Use Render's PORT environment variable or default to 8000
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
